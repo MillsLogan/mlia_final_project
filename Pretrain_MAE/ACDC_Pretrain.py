@@ -1,4 +1,7 @@
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append("..")
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import json
 import time
@@ -8,7 +11,7 @@ import matplotlib.pyplot as plt
 
 from torch.nn import L1Loss
 from monai.utils import set_determinism, first
-from Pretrain_MAE.MAE_3d import MAE
+from MAE_3d import MAE
 from monai.losses import ContrastiveLoss
 from monai.data import DataLoader, Dataset
 from monai.transforms import (
@@ -27,10 +30,9 @@ from monai.transforms import (
 )
 
 def main():
-
-    json_Path = os.path.normpath('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/json_files/cardiac/Cardiac_dataset.json')
-    data_Root = os.path.normpath('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/cardiac')
-    logdir_path = os.path.normpath('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/log')
+    json_Path = os.path.normpath('Pretrain_MAE/json_files/cardiac/Cardiac_dataset.json')
+    data_Root = os.path.normpath('ACDC/database')
+    logdir_path = os.path.normpath('Pretrain_MAE/log')
 
     if os.path.exists(logdir_path)==False:
         os.mkdir(logdir_path)
@@ -43,10 +45,15 @@ def main():
     val_Data = json_Data['validation']
 
     for idx, each_d in enumerate(train_Data):
-        train_Data[idx]['image'] = os.path.join(data_Root, train_Data[idx]['image'])
+        folder, file = train_Data[idx]['image'].split("/")
+        patient_id = file[:10]
+        train_Data[idx]['image'] = os.path.join(data_Root, folder, patient_id, file)
+        
 
     for idx, each_d in enumerate(val_Data):
-        val_Data[idx]['image'] = os.path.join(data_Root, val_Data[idx]['image'])
+        folder, file = val_Data[idx]['image'].split("/")
+        patient_id = file[:10]
+        val_Data[idx]['image'] = os.path.join(data_Root, folder, patient_id, file)
 
     print('Total Number of Training Data Samples: {}'.format(len(train_Data)))
     print(train_Data)
@@ -61,7 +68,7 @@ def main():
     # Define Training Transforms
     train_Transforms = Compose(
         [
-        LoadImaged(keys=["image"]),
+        LoadImaged(keys=["image"], reader="NibabelReader"),
         EnsureChannelFirstd(keys=["image"]),
         Spacingd(keys=["image"], pixdim=(
             2.0, 2.0, 2.0), mode=("bilinear")),
@@ -108,9 +115,11 @@ def main():
         patch_size=16,
         encoder_dim=768,
         mlp_dim=3072,
-        masking_ratio = 0.65,   # the paper recommended 75% masked patches
+        masking_ratio = 0.75,   # the paper recommended 75% masked patches
         decoder_dim = 512,      # paper showed good results with just 512
-        decoder_depth = 6       # anywhere from 1 to 8
+        decoder_depth = 6,       # anywhere from 1 to 8
+        encoder_depth=16,
+        encoder_heads=12
         )
 
     # model = MAE(
@@ -149,7 +158,7 @@ def main():
     best_val_loss = 1000.0
 
     recon_loss = L1Loss()
-    contrastive_loss = ContrastiveLoss(batch_size=batch_size*2, temperature=0.05)
+    contrastive_loss = ContrastiveLoss(temperature=0.05)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Define DataLoader using MONAI, CacheDataset needs to be used
@@ -177,11 +186,13 @@ def main():
                 batch_data["image_2"].to(device),
                 batch_data["gt_image"].to(device),
             )
+            
             optimizer.zero_grad()
-            # outputs_v1, hidden_v1 = model(inputs)
-            # outputs_v2, hidden_v2 = model(inputs_2)
-            outputs_v1 = model(inputs)
-            outputs_v2 = model(inputs_2)
+            outputs_v1, hidden_v1 = model(inputs)
+            outputs_v2, hidden_v2 = model(inputs_2)
+            
+            # outputs_v1 = model(inputs)
+            # outputs_v2 = model(inputs_2)
 
             flat_out_v1 = outputs_v1.flatten(start_dim=1, end_dim=4)
             flat_out_v2 = outputs_v2.flatten(start_dim=1, end_dim=4)
@@ -213,13 +224,13 @@ def main():
 
         epoch_loss_values.append(epoch_loss)
         train_loss = np.array(epoch_loss_values)
-        np.save('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/plot_result/r_train_loss/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
+        np.save('Pretrain_MAE/plot_result/r_train_loss/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
         epoch_cl_loss_values.append(epoch_cl_loss)
         train_contra_loss = np.array(epoch_cl_loss_values)
-        np.save('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/plot_result/r_train_contra_loss/bs_{}_Train_contra_loss_epoch_{}'.format(batch_size, epoch + 1), train_contra_loss)
+        np.save('Pretrain_MAE/plot_result/r_train_contra_loss/bs_{}_Train_contra_loss_epoch_{}'.format(batch_size, epoch + 1), train_contra_loss)
         epoch_recon_loss_values.append(epoch_recon_loss)
         train_recon_loss = np.array(epoch_recon_loss_values)
-        np.save('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/plot_result/r_train_recon_loss/bs_{}_Train_Recon_loss_epoch_{}'.format(batch_size, epoch + 1), train_recon_loss)
+        np.save('Pretrain_MAE/plot_result/r_train_recon_loss/bs_{}_Train_Recon_loss_epoch_{}'.format(batch_size, epoch + 1), train_recon_loss)
         print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
 
         if epoch % val_interval == 0:
@@ -235,8 +246,8 @@ def main():
                     val_batch["gt_image"].to(device),
                 )
                 print('Input shape: {}'.format(inputs.shape))
-                # outputs, outputs_v2 = model(inputs)
-                outputs = model(inputs)
+                outputs, outputs_v2 = model(inputs)
+                # outputs = model(inputs)
                 val_loss = recon_loss(outputs, gt_input)
                 total_val_loss += val_loss.item()
                 end_time = time.time()
@@ -244,7 +255,7 @@ def main():
             total_val_loss /= val_step
             val_loss_values.append(total_val_loss)
             val_loss = np.array(val_loss_values)
-            np.save('/home/xiaoxin/MAE_TransRNet/Pretrain_MAE/plot_result/r_val_loss/bs_{}_Val_Loss_epoch_{}'.format(batch_size, epoch + 1), val_loss)
+            np.save('Pretrain_MAE/plot_result/r_val_loss/bs_{}_Val_Loss_epoch_{}'.format(batch_size, epoch + 1), val_loss)
             print(f"epoch {epoch + 1} Validation average loss: {total_val_loss:.4f}, " f"time taken: {end_time-start_time}s")
 
             if total_val_loss < best_val_loss:

@@ -2,7 +2,6 @@ import os
 import SimpleITK as sitk
 import scipy.ndimage as nd
 import numpy as np
-import scipy.ndimage as nd
 
 
 def one_hot(img, C):

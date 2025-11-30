@@ -106,7 +106,9 @@ class MAE(nn.Module):
         masking_ratio = 0.75,
         decoder_depth = 6,
         decoder_heads = 8,
-        decoder_dim_head = 64
+        decoder_dim_head = 64,
+        encoder_depth=16,
+        encoder_heads=12
     ):
         super().__init__()
         assert masking_ratio > 0 and masking_ratio < 1, 'masking ratio must be kept between 0 and 1'
@@ -134,7 +136,7 @@ class MAE(nn.Module):
         self.mask_token = nn.Parameter(torch.randn(decoder_dim))
         # print("encoder_dim:",encoder_dim) # 768
         # print("decoder_dim:",decoder_dim) # 512
-        self.encoder = Transformer(dim = encoder_dim, depth=32, heads=16, dim_head=decoder_dim_head,mlp_dim=decoder_dim * 4, dropout=0.1)
+        self.encoder = Transformer(dim = encoder_dim, depth=encoder_depth, heads=encoder_heads, dim_head=decoder_dim_head,mlp_dim=decoder_dim * 4, dropout=0.1)
         self.decoder = Transformer(dim = decoder_dim, depth = decoder_depth, heads = decoder_heads, dim_head = decoder_dim_head, mlp_dim = mlp_dim,dropout=0.1)
         self.to_latent = nn.Identity()
         self.mlp_head = nn.Sequential(
@@ -222,13 +224,14 @@ class MAE(nn.Module):
         decoder_tokens = torch.cat((mask_tokens, decoder_tokens), dim = 1)
         # print("decoder_tokens.shape:", decoder_tokens.shape)
         decoded_tokens = self.decoder(decoder_tokens)
-        # print("decoder_tokens.shape:", decoder_tokens.shape)
+        # print("decoded_tokens.shape:", decoded_tokens.shape)
 
         decoder_tokens = decoder_tokens.transpose(1, 2)
         # print("decoder_tokens.shape:", decoder_tokens.shape)
-        cuberoot = round(math.pow(decoder_tokens.size()[2], 1 / 3))
+        # return
         x_shape = decoder_tokens.size()
-        x = torch.reshape(decoder_tokens, [x_shape[0], x_shape[1], cuberoot, cuberoot, cuberoot])
+        cuberoot = round(math.pow(x_shape[1], 1 / 3))
+        x = torch.reshape(decoder_tokens, [x_shape[0], x_shape[1], 4, 8, 8])
         x = self.conv3d_transpose(x)
         x = self.conv3d_transpose_1(x)
 
