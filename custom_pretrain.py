@@ -243,6 +243,20 @@ def train_model(
                 val_loss_values.append(val_loss)
                 print(f"validation loss: {val_loss:.4f}")
 
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    np.savez(
+        os.path.join(LOG_DIR, "training_losses.npz"),
+        masked_recon_loss=np.array(masked_recon_loss_values),
+        full_recon_loss=np.array(full_recon_loss_values),
+        val_loss=np.array(val_loss_values)
+    )
+
+    torch.save(
+        model.state_dict(),
+        os.path.join(LOG_DIR, "mae_pretrained_model.pth")
+    )
+
 
 def main():
     # Load dataset
