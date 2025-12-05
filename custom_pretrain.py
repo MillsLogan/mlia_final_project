@@ -435,7 +435,7 @@ def main():
     # I'm assuming they meant the encoder only, but there is still a discrepancy of ~2.3M parameters
     
     # Training parameters
-    max_epochs = 1 # From paper
+    max_epochs = 500 # From paper
     val_interval = 1 # From code, after how many epochs to validate
     batch_size = 2 # From paper
     lr = 1e-4 # From paper
