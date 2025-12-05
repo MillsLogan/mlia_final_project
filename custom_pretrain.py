@@ -1,6 +1,6 @@
 JSON_PATH = "Pretrain_MAE/json_files/cardiac/Cardiac_dataset.json"
 DATA_ROOT = "ACDC/database"
-LOG_DIR = "pretrain_experiments"
+LOG_DIR = "pretrain_experiments/full_mse_loss"
 VERBOSE = True
 
 import os
@@ -162,21 +162,26 @@ def get_training_transform_pipeline() -> Compose:
         ]
     )
 
-def train_model(
+def train_model_with_masked_error(
     model: MAE,
     train_loader: monaiDataLoader,
     val_loader: monaiDataLoader,
     optimizer: torch.optim.Optimizer,
-    recon_loss: torch.nn.Module,
     max_epochs: int,
     val_interval: int
 ) -> None:
-    
+    # Get both for full image reconstruction, but only use MSE for backprop for now
+    mse_loss = torch.nn.MSELoss()
+    mae_loss = torch.nn.L1Loss()
+
     # Lists to track losses
     masked_recon_loss_values = []
-    full_recon_loss_values = []
+    full_recon_mse_loss_values = []
+    full_recon_mae_loss_values = []
     
-    val_loss_values = []
+    val_masked_loss_values = []
+    val_full_mse_loss_values = []
+    val_full_mae_loss_values = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -185,7 +190,8 @@ def train_model(
         print(f"epoch {epoch + 1}/{max_epochs}")
         model.train()
         epoch_masked_recon_loss = 0
-        epoch_full_recon_loss = 0
+        epoch_full_mse_recon_loss = 0
+        epoch_full_mae_recon_loss = 0
         step = 0
 
         for batch_data in train_loader:
@@ -211,43 +217,184 @@ def train_model(
             masked_recon_loss.backward()
 
             # Reconstruction loss between outputs and ground truth, not just the masked regions
-            full_recon_loss = recon_loss(outputs, inputs)
+            full_recon_mse_loss = mse_loss(outputs, inputs)
+            full_recon_mae_loss = mae_loss(outputs, inputs)
             # Don't use the full reconstruction loss for backpropagation
-            epoch_full_recon_loss += full_recon_loss.detach().item()
+            epoch_full_mse_recon_loss += full_recon_mse_loss.detach().item()
+            epoch_full_mae_recon_loss += full_recon_mae_loss.detach().item()
             optimizer.step()
 
             if step % 10 == 0:
                 print(f"{step}/{len(train_loader)}, train_loss: {masked_recon_loss.item():.4f}")
 
         epoch_masked_recon_loss /= step
-        epoch_full_recon_loss /= step
+        epoch_full_mse_recon_loss /= step
+        epoch_full_mae_recon_loss /= step
         masked_recon_loss_values.append(epoch_masked_recon_loss)
-        full_recon_loss_values.append(epoch_full_recon_loss)
-        print(f"epoch {epoch + 1} average masked recon loss: {epoch_masked_recon_loss:.4f}, average full recon loss: {epoch_full_recon_loss:.4f}")
+        full_recon_mse_loss_values.append(epoch_full_mse_recon_loss)
+        full_recon_mae_loss_values.append(epoch_full_mae_recon_loss)
+        print(f"epoch {epoch + 1} average masked recon loss: {epoch_masked_recon_loss:.4f}, average full MSE recon loss: {epoch_full_mse_recon_loss:.4f}, average full MAE recon loss: {epoch_full_mae_recon_loss:.4f}")
         if (epoch + 1) % val_interval == 0:
             model.eval()
-            val_loss = 0
+            val_full_mse_loss = 0
+            val_full_mae_loss = 0
+            val_masked_loss = 0
             val_step = 0
             with torch.no_grad():
                 for val_data in val_loader:
                     val_step += 1
                     val_inputs = val_data["image"].to(device)
 
-                    val_reconstructions, _ = model(val_inputs)
-                    val_loss_batch = recon_loss(val_reconstructions, val_inputs)
-                    val_loss += val_loss_batch.item()
-
-                val_loss /= val_step
-                val_loss_values.append(val_loss)
-                print(f"validation loss: {val_loss:.4f}")
+                    val_reconstructions, val_masked_recon_loss = model(val_inputs)
+                    val_mse_loss_batch = mse_loss(val_reconstructions, val_inputs)
+                    val_mae_loss_batch = mae_loss(val_reconstructions, val_inputs)
+                    val_full_mse_loss += val_mse_loss_batch.item()
+                    val_full_mae_loss += val_mae_loss_batch.item()
+                    val_masked_loss += val_masked_recon_loss.item()
+                val_full_mse_loss /= val_step
+                val_full_mae_loss /= val_step
+                val_masked_loss /= val_step
+                val_full_mse_loss_values.append(val_full_mse_loss)
+                val_full_mae_loss_values.append(val_full_mae_loss)
+                val_masked_loss_values.append(val_masked_loss)
+                print(f"validation masked loss: {val_masked_loss:.4f}")
+                print(f"validation full recon loss (MSE): {val_full_mse_loss:.4f}, validation full MAE recon loss: {val_full_mae_loss:.4f}")
 
     os.makedirs(LOG_DIR, exist_ok=True)
 
     np.savez(
         os.path.join(LOG_DIR, "training_losses.npz"),
         masked_recon_loss=np.array(masked_recon_loss_values),
-        full_recon_loss=np.array(full_recon_loss_values),
-        val_loss=np.array(val_loss_values)
+        full_mse_loss=np.array(full_recon_mse_loss_values),
+        full_mae_loss=np.array(full_recon_mae_loss_values),
+    )
+
+    np.savez(
+        os.path.join(LOG_DIR, "validation_losses.npz"),
+        val_masked_loss=np.array(val_masked_loss_values),
+        val_full_mse_loss=np.array(val_full_mse_loss_values),
+        val_full_mae_loss=np.array(val_full_mae_loss_values),
+    )
+
+    torch.save(
+        model.state_dict(),
+        os.path.join(LOG_DIR, "mae_pretrained_model.pth")
+    )
+
+
+def train_model_with_full_mse_error(
+    model: MAE,
+    train_loader: monaiDataLoader,
+    val_loader: monaiDataLoader,
+    optimizer: torch.optim.Optimizer,
+    max_epochs: int,
+    val_interval: int
+) -> None:
+    # Get both for full image reconstruction, but only use MSE for backprop for now
+    mse_loss = torch.nn.MSELoss()
+    mae_loss = torch.nn.L1Loss()
+
+    # Lists to track losses
+    masked_recon_loss_values = []
+    full_recon_mse_loss_values = []
+    full_recon_mae_loss_values = []
+    
+    val_masked_loss_values = []
+    val_full_mse_loss_values = []
+    val_full_mae_loss_values = []
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    for epoch in range(max_epochs):
+        print("-" * 10)
+        print(f"epoch {epoch + 1}/{max_epochs}")
+        model.train()
+        epoch_masked_recon_loss = 0
+        epoch_full_mse_recon_loss = 0
+        epoch_full_mae_recon_loss = 0
+        step = 0
+
+        for batch_data in train_loader:
+            step += 1
+            
+            inputs = batch_data["image"].to(device)          # masked image
+            
+            # gt_images = batch_data["gt_image"].to(device)    # ground truth image
+            # inputs_2 = batch_data["image_2"].to(device)      # second masked image
+
+            # This is different from the original code
+            # This stacks the two images along the batch dimension
+            # So if batch size is 2, inputs will have 4 images: [img1, img2, img1_2, img2_2]
+            # This allows processing both images in one forward pass
+            # inputs = torch.cat((inputs, inputs_2), dim=0)
+
+            optimizer.zero_grad()
+
+            # The loss is unused in the original code
+            outputs, masked_recon_loss = model(inputs)
+            
+            epoch_masked_recon_loss += masked_recon_loss.detach().item()
+            # masked_recon_loss.backward()
+
+            # Reconstruction loss between outputs and ground truth, not just the masked regions
+            full_recon_mse_loss = mse_loss(outputs, inputs)
+            full_recon_mse_loss.backward() # Backprop using full MSE loss
+            full_recon_mae_loss = mae_loss(outputs, inputs)
+            # Don't use the full reconstruction loss for backpropagation
+            epoch_full_mse_recon_loss += full_recon_mse_loss.item()
+            epoch_full_mae_recon_loss += full_recon_mae_loss.detach().item()
+            optimizer.step()
+
+            if step % 10 == 0:
+                print(f"{step}/{len(train_loader)}, train_loss: {(full_recon_mse_loss / step):.4f}")
+
+        epoch_masked_recon_loss /= step
+        epoch_full_mse_recon_loss /= step
+        epoch_full_mae_recon_loss /= step
+        masked_recon_loss_values.append(epoch_masked_recon_loss)
+        full_recon_mse_loss_values.append(epoch_full_mse_recon_loss)
+        full_recon_mae_loss_values.append(epoch_full_mae_recon_loss)
+        print(f"epoch {epoch + 1} average masked recon loss: {epoch_masked_recon_loss:.4f}, average full MSE recon loss: {epoch_full_mse_recon_loss:.4f}, average full MAE recon loss: {epoch_full_mae_recon_loss:.4f}")
+        if (epoch + 1) % val_interval == 0:
+            model.eval()
+            val_full_mse_loss = 0
+            val_full_mae_loss = 0
+            val_masked_loss = 0
+            val_step = 0
+            with torch.no_grad():
+                for val_data in val_loader:
+                    val_step += 1
+                    val_inputs = val_data["image"].to(device)
+
+                    val_reconstructions, val_masked_recon_loss = model(val_inputs)
+                    val_mse_loss_batch = mse_loss(val_reconstructions, val_inputs)
+                    val_mae_loss_batch = mae_loss(val_reconstructions, val_inputs)
+                    val_full_mse_loss += val_mse_loss_batch.item()
+                    val_full_mae_loss += val_mae_loss_batch.item()
+                    val_masked_loss += val_masked_recon_loss.item()
+                val_full_mse_loss /= val_step
+                val_full_mae_loss /= val_step
+                val_masked_loss /= val_step
+                val_full_mse_loss_values.append(val_full_mse_loss)
+                val_full_mae_loss_values.append(val_full_mae_loss)
+                val_masked_loss_values.append(val_masked_loss)
+                print(f"validation masked loss: {val_masked_loss:.4f}")
+                print(f"validation full recon loss (MSE): {val_full_mse_loss:.4f}, validation full MAE recon loss: {val_full_mae_loss:.4f}")
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    np.savez(
+        os.path.join(LOG_DIR, "training_losses.npz"),
+        masked_recon_loss=np.array(masked_recon_loss_values),
+        full_mse_loss=np.array(full_recon_mse_loss_values),
+        full_mae_loss=np.array(full_recon_mae_loss_values),
+    )
+
+    np.savez(
+        os.path.join(LOG_DIR, "validation_losses.npz"),
+        val_masked_loss=np.array(val_masked_loss_values),
+        val_full_mse_loss=np.array(val_full_mse_loss_values),
+        val_full_mae_loss=np.array(val_full_mae_loss_values),
     )
 
     torch.save(
@@ -288,14 +435,11 @@ def main():
     # I'm assuming they meant the encoder only, but there is still a discrepancy of ~2.3M parameters
     
     # Training parameters
-    max_epochs = 500 # From paper
-    val_interval = 2 # From code, after how many epochs to validate
+    max_epochs = 1 # From paper
+    val_interval = 1 # From code, after how many epochs to validate
     batch_size = 2 # From paper
     lr = 1e-4 # From paper
     workers = 0 # From code, number of workers for data loading
-
-    # Loss and Optimizer
-    recon_loss = torch.nn.MSELoss() # Code uses L1 loss, paper says MSE loss
     
     # From code, not mentioned in paper, except in Figure 12
     # contrastive_loss = ContrastiveLoss(temperature=0.05)
@@ -311,12 +455,20 @@ def main():
     val_dataset = monaiDataset(data=val_ds, transform=training_transforms)
     val_loader = monaiDataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=workers)
 
-    train_model(
+    # train_model_with_masked_error(
+    #     model=model,
+    #     train_loader=train_loader,
+    #     val_loader=val_loader,
+    #     optimizer=optimizer,
+    #     max_epochs=max_epochs,
+    #     val_interval=val_interval
+    # )
+
+    train_model_with_full_mse_error(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         optimizer=optimizer,
-        recon_loss=recon_loss,
         max_epochs=max_epochs,
         val_interval=val_interval
     )

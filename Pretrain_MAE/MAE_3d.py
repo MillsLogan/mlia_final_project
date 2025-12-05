@@ -113,7 +113,7 @@ class MAE(nn.Module):
         super().__init__()
         assert masking_ratio > 0 and masking_ratio < 1, 'masking ratio must be kept between 0 and 1'
         self.masking_ratio = masking_ratio
-
+        self.patch_size = patch_size
         # extract some hyperparameters and functions from encoder (vision transformer to be trained)
 
         num_patches = (image_size[0] // patch_size) * \
@@ -230,8 +230,10 @@ class MAE(nn.Module):
         # print("decoder_tokens.shape:", decoder_tokens.shape)
         # return
         x_shape = decoder_tokens.size()
-        cuberoot = round(math.pow(x_shape[1], 1 / 3))
-        x = torch.reshape(decoder_tokens, [x_shape[0], x_shape[1], 4, 8, 8])
+        patch_d = img.shape[2] // self.patch_size
+        patch_h = img.shape[3] // self.patch_size
+        patch_w = img.shape[4] // self.patch_size
+        x = torch.reshape(decoder_tokens, [x_shape[0], -1, patch_d, patch_h, patch_w])
         x = self.conv3d_transpose(x)
         x = self.conv3d_transpose_1(x)
 
