@@ -1,0 +1,313 @@
+JSON_PATH = "Pretrain_MAE/json_files/cardiac/Cardiac_dataset.json"
+DATA_ROOT = "ACDC/database"
+LOG_DIR = "pretrain_experiments"
+VERBOSE = True
+
+import os
+import json
+import torch
+import numpy as np
+import SimpleITK as sitk
+sitk.ProcessObject_SetGlobalWarningDisplay(False)
+import itk
+itk.ProcessObject.SetGlobalWarningDisplay(False)
+import warnings
+warnings.filterwarnings("ignore")
+from monai.utils.misc import set_determinism
+from monai.data import Dataset as monaiDataset
+from monai.data import DataLoader as monaiDataLoader
+from monai.losses import ContrastiveLoss
+from monai.transforms import (
+    LoadImaged,
+    Compose,
+    CropForegroundd,
+    CopyItemsd,
+    SpatialPadd,
+    EnsureChannelFirstd,
+    Spacingd,
+    OneOf,
+    ScaleIntensityRanged,
+    RandSpatialCropSamplesd,
+    RandCoarseDropoutd,
+    RandCoarseShuffled
+)
+
+from Pretrain_MAE.MAE_3d import MAE
+
+def get_image_path(json_entry: str) -> str:
+    """
+    Given the JSON entry from the dataset, for a patient, return the full file path.
+    Input: "training/patient001_frame01.nii.gz"
+    Output: "ACDC/database/training/patient001/patient001_frame01.nii.gz"
+
+    Args:
+        json_entry (str): The JSON entry for a patient, e.g., "training/patient001_frame01.nii.gz".
+    Returns:
+        file_path (str): The full file path to the image.
+    Raises:
+        AssertionError: If the constructed file path does not exist.
+    """
+
+
+    folder, file = json_entry.split("/")
+    patient_id = file.split("_")[0] # patient001
+    file_path = os.path.join(DATA_ROOT, folder, patient_id, file)
+    assert os.path.exists(file_path), f"File not found: {file_path}"
+    return file_path
+
+def load_dataset(print_ds_size: bool=VERBOSE) -> tuple[dict, dict]:
+    """
+    Loads and formats the dataset from the JSON file. Configures the path and returns
+    training and validation datasets as dictionaries.
+
+    Returns:
+        training (dict): The training dataset entries.
+        validation (dict): The validation dataset entries.
+    """
+    assert os.path.exists(JSON_PATH), f"JSON file not found: {JSON_PATH}"
+    with open(JSON_PATH, 'r') as f:
+        data = json.load(f)
+    assert data.get("training") is not None, "JSON file does not contain 'training' key."
+    assert data.get("validation") is not None, "JSON file does not contain 'validation' key."
+
+    for split in ["training", "validation"]:
+        for i in range(len(data[split])):
+            json_entry = data[split][i]["image"]
+            file_path = get_image_path(json_entry)
+            data[split][i]["image"] = file_path
+
+    if print_ds_size:
+        print(f"Training dataset size: {len(data['training'])} samples")
+        print(f"Validation dataset size: {len(data['validation'])} samples")
+
+    return data["training"], data["validation"]
+
+def get_training_transform_pipeline() -> Compose:
+    """
+    Returns the training transformation pipeline using MONAI transforms.
+    The pipeline explanation is included in the comments below. Generally,
+    it takes a dictionary with key "image" and applies a series of transformations
+    to prepare the data for training.
+    
+    Example Input:
+    ```
+    {"image": <image_data> }
+    ```
+    Example Output:
+    ```
+    [
+        # Creates two crops of the image so each input results in two training samples
+        # image 1 and image 2 are different augmentations of the same crop
+        { # Crop 1, 
+            "image": <transformed_image_1>,
+            "gt_image": <ground_truth_image>,
+            "image_2": <transformed_image_2>
+        },
+        { # Crop 2
+            "image": <transformed_image_1>,
+            "gt_image": <ground_truth_image>,
+            "image_2": <transformed_image_2>
+        }
+    ]
+    ```
+    """
+
+
+    return Compose(
+        [
+            # Read the image from file
+            LoadImaged(keys=["image"], reader="itkreader"),
+            # Ensures the channel dimension is first, if it's grey-scale image adds a channel dim
+            # e.g., (H, W, D) -> (1, H, W, D)
+            EnsureChannelFirstd(keys=["image"]),
+            # Ensures the image is spaced correctly, i.e., each pixel represents 2mm x 2mm x 2mm
+            Spacingd(keys=["image"], pixdim=(2.0, 2.0, 2.0), mode=("bilinear")),
+            # Scales intensity to [0.0, 1.0] range clipping values outside [-57, 164]
+            ScaleIntensityRanged(
+                keys=["image"],
+                a_min=-57,
+                a_max=164,
+                b_min=0.0,
+                b_max=1.0,
+                clip=True
+            ),
+            # Crops the foreground of the image, trimming out black space to reduce memory
+            CropForegroundd(keys=["image"], source_key="image"),
+            # Checks if the image is at least 64x128x128, if not pads with zeros
+            SpatialPadd(keys=["image"], spatial_size=(64,128,128)),
+            # Randomly extracts 2 samples of size 64x128x128 from the volume
+            RandSpatialCropSamplesd(keys=["image"], roi_size=(64,128,128), random_size=False, num_samples=2),
+            # Copy the image to create 3 versions: gt_image (unaltered truth), image (to be masked), image_2 (another to be masked)
+            # CopyItemsd(keys=["image"], times=2, names=["gt_image", "image_2"], allow_missing_keys=False),
+            # # Chooses between two types of patch masking strategies
+            # OneOf(transforms=[
+            #     # Randomly drops out 6 5x5x5 patches (Creates 6 holes of zeros)
+            #     RandCoarseDropoutd(keys=["image"], prob=1.0, holes=6, spatial_size=5, dropout_holes=True,
+            #                     max_spatial_size=32),
+            #     # Randomly KEEPS 6 20x20x20 patches (Zeros out everything else)
+            #     RandCoarseDropoutd(keys=["image"], prob=1.0, holes=6, spatial_size=20, dropout_holes=False,
+            #                     max_spatial_size=64),
+            #     ]
+            # ),
+            # # Randomly shuffles 10 8x8x8 patches within the image with 80% probability
+            # RandCoarseShuffled(keys=["image"], prob=0.8, holes=10, spatial_size=8),
+
+            # # Same augmentations for image_2, separate calls are made to ensure different random augmentations
+            # OneOf(transforms=[
+            #     RandCoarseDropoutd(keys=["image_2"], prob=1.0, holes=6, spatial_size=5, dropout_holes=True,
+            #                     max_spatial_size=32),
+            #     RandCoarseDropoutd(keys=["image_2"], prob=1.0, holes=6, spatial_size=20, dropout_holes=False,
+            #                     max_spatial_size=64),
+            #     ]
+            # ),
+            # RandCoarseShuffled(keys=["image_2"], prob=0.8, holes=10, spatial_size=8)
+        ]
+    )
+
+def train_model(
+    model: MAE,
+    train_loader: monaiDataLoader,
+    val_loader: monaiDataLoader,
+    optimizer: torch.optim.Optimizer,
+    recon_loss: torch.nn.Module,
+    max_epochs: int,
+    val_interval: int
+) -> None:
+    
+    # Lists to track losses
+    masked_recon_loss_values = []
+    full_recon_loss_values = []
+    
+    val_loss_values = []
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    for epoch in range(max_epochs):
+        print("-" * 10)
+        print(f"epoch {epoch + 1}/{max_epochs}")
+        model.train()
+        epoch_masked_recon_loss = 0
+        epoch_full_recon_loss = 0
+        step = 0
+
+        for batch_data in train_loader:
+            step += 1
+            
+            inputs = batch_data["image"].to(device)          # masked image
+            
+            # gt_images = batch_data["gt_image"].to(device)    # ground truth image
+            # inputs_2 = batch_data["image_2"].to(device)      # second masked image
+
+            # This is different from the original code
+            # This stacks the two images along the batch dimension
+            # So if batch size is 2, inputs will have 4 images: [img1, img2, img1_2, img2_2]
+            # This allows processing both images in one forward pass
+            # inputs = torch.cat((inputs, inputs_2), dim=0)
+
+            optimizer.zero_grad()
+
+            # The loss is unused in the original code
+            outputs, masked_recon_loss = model(inputs)
+            
+            epoch_masked_recon_loss += masked_recon_loss.item()
+            masked_recon_loss.backward()
+
+            # Reconstruction loss between outputs and ground truth, not just the masked regions
+            full_recon_loss = recon_loss(outputs, inputs)
+            # Don't use the full reconstruction loss for backpropagation
+            epoch_full_recon_loss += full_recon_loss.detach().item()
+            optimizer.step()
+
+            if step % 10 == 0:
+                print(f"{step}/{len(train_loader)}, train_loss: {masked_recon_loss.item():.4f}")
+
+        epoch_masked_recon_loss /= step
+        epoch_full_recon_loss /= step
+        masked_recon_loss_values.append(epoch_masked_recon_loss)
+        full_recon_loss_values.append(epoch_full_recon_loss)
+        print(f"epoch {epoch + 1} average masked recon loss: {epoch_masked_recon_loss:.4f}, average full recon loss: {epoch_full_recon_loss:.4f}")
+        if (epoch + 1) % val_interval == 0:
+            model.eval()
+            val_loss = 0
+            val_step = 0
+            with torch.no_grad():
+                for val_data in val_loader:
+                    val_step += 1
+                    val_inputs = val_data["image"].to(device)
+
+                    val_reconstructions, _ = model(val_inputs)
+                    val_loss_batch = recon_loss(val_reconstructions, val_inputs)
+                    val_loss += val_loss_batch.item()
+
+                val_loss /= val_step
+                val_loss_values.append(val_loss)
+                print(f"validation loss: {val_loss:.4f}")
+
+
+def main():
+    # Load dataset
+    train_ds, val_ds = load_dataset()
+
+    # Set determinism for reproducibility
+    set_determinism(seed=123)
+
+    training_transforms = get_training_transform_pipeline()
+
+    # Base model from paper
+    # Patch size: 16
+    # Encdoer dim: 768
+    # MLP dim: 3072
+    # ViT layers: 12 - encoder depth
+    # ViT head: 12 - encoder heads
+    model = MAE(
+        image_size=(64,128,128),
+        patch_size=16,
+        encoder_dim=768,
+        mlp_dim=3072,
+        masking_ratio = 0.75,   # the paper recommended 75% masked patches
+        decoder_dim = 512,      # paper showed good results with just 512
+        decoder_depth = 6,       # anywhere from 1 to 8
+        encoder_depth=12,
+        encoder_heads=12
+    )
+    # It should be noted that this model has 76,836,625
+    # The encoder alone has 66,140,160
+    # The paper mentions 63.837M parameters for the base model
+    # I'm assuming they meant the encoder only, but there is still a discrepancy of ~2.3M parameters
+    
+    # Training parameters
+    max_epochs = 500 # From paper
+    val_interval = 2 # From code, after how many epochs to validate
+    batch_size = 2 # From paper
+    lr = 1e-4 # From paper
+    workers = 0 # From code, number of workers for data loading
+
+    # Loss and Optimizer
+    recon_loss = torch.nn.MSELoss() # Code uses L1 loss, paper says MSE loss
+    
+    # From code, not mentioned in paper, except in Figure 12
+    # contrastive_loss = ContrastiveLoss(temperature=0.05)
+
+    # Paper does mention using Adam optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Train Dataset and DataLoader
+    train_dataset = monaiDataset(data=train_ds, transform=training_transforms)
+    train_loader = monaiDataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers)
+
+    # Validation Dataset and DataLoader
+    val_dataset = monaiDataset(data=val_ds, transform=training_transforms)
+    val_loader = monaiDataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=workers)
+
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        recon_loss=recon_loss,
+        max_epochs=max_epochs,
+        val_interval=val_interval
+    )
+
+if __name__ == "__main__":
+    main()

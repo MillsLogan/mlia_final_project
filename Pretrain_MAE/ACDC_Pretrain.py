@@ -68,7 +68,7 @@ def main():
     # Define Training Transforms
     train_Transforms = Compose(
         [
-        LoadImaged(keys=["image"], reader="NibabelReader"),
+        LoadImaged(keys=["image"], reader="itkreader"),
         EnsureChannelFirstd(keys=["image"]),
         Spacingd(keys=["image"], pixdim=(
             2.0, 2.0, 2.0), mode=("bilinear")),
@@ -118,7 +118,7 @@ def main():
         masking_ratio = 0.75,   # the paper recommended 75% masked patches
         decoder_dim = 512,      # paper showed good results with just 512
         decoder_depth = 6,       # anywhere from 1 to 8
-        encoder_depth=16,
+        encoder_depth=12,
         encoder_heads=12
         )
 
