@@ -11,8 +11,6 @@ import SimpleITK as sitk
 sitk.ProcessObject_SetGlobalWarningDisplay(False)
 import itk
 itk.ProcessObject.SetGlobalWarningDisplay(False)
-import warnings
-warnings.filterwarnings("ignore")
 from monai.utils.misc import set_determinism
 from monai.data import Dataset as monaiDataset
 from monai.data import DataLoader as monaiDataLoader
