@@ -30,7 +30,9 @@ from monai.transforms import (
     RandCoarseShuffled
 )
 
-from Pretrain_MAE.MAE_3d import MAE
+# from Pretrain_MAE.MAE_3d import MAE
+from new_models import MAETransformer
+
 
 def get_image_path(json_entry: str) -> str:
     """
@@ -163,7 +165,7 @@ def get_training_transform_pipeline() -> Compose:
     )
 
 def train_model_with_masked_error(
-    model: MAE,
+    model: MAETransformer,
     train_loader: monaiDataLoader,
     val_loader: monaiDataLoader,
     optimizer: torch.optim.Optimizer,
@@ -283,7 +285,7 @@ def train_model_with_masked_error(
 
 
 def train_model_with_full_mse_error(
-    model: MAE,
+    model: MAETransformer,
     train_loader: monaiDataLoader,
     val_loader: monaiDataLoader,
     optimizer: torch.optim.Optimizer,
@@ -418,16 +420,17 @@ def main():
     # MLP dim: 3072
     # ViT layers: 12 - encoder depth
     # ViT head: 12 - encoder heads
-    model = MAE(
-        image_size=(64,128,128),
+    model = MAETransformer(
+        img_size=(64,128,128),
         patch_size=16,
         encoder_dim=768,
         mlp_dim=3072,
         masking_ratio = 0.75,   # the paper recommended 75% masked patches
         decoder_dim = 512,      # paper showed good results with just 512
-        decoder_depth = 6,       # anywhere from 1 to 8
-        encoder_depth=12,
-        encoder_heads=12
+        dec_num_layers = 6,       # anywhere from 1 to 8
+        dec_num_heads=4,
+        enc_num_layers=12,
+        enc_num_heads=12
     )
     # It should be noted that this model has 76,836,625
     # The encoder alone has 66,140,160
