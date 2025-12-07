@@ -10,7 +10,6 @@ from torchvision import transforms
 from torch import optim
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from models import CONFIGS as CONFIGS_reg
 from natsort import natsorted
 
 class Logger(object):
@@ -59,7 +58,8 @@ def main():
     reg_model_bilin.cuda()
     model = models.MAE_Transformer(config_MAE, img_size=(64,128,128))
     use_pretrained = 1
-    pretrained_path = os.path.normpath('/home/xiaoxin/MAE_TransRNet/tmp/pycharm_project_858/Pretrain_MAE/pretrain_model/MAE_Base_Pretrain_ACDC.pt')
+    pretrained_path = os.path.normpath("pretrain_experiments/mae_pretrained_model.pth")
+    # pretrained_path = os.path.normpath('/home/xiaoxin/MAE_TransRNet/tmp/pycharm_project_858/Pretrain_MAE/pretrain_model/MAE_Base_Pretrain_ACDC.pt')
     updated_lr = lr
 
     model.cuda()

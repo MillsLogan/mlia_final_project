@@ -209,3 +209,4 @@ ACDC*
 log*
 plot_result*
 pretrain_experiments*
+npdata/*

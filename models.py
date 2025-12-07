@@ -776,10 +776,6 @@ class VecInt(nn.Module):
             vec = vec + self.transformer(vec, vec)
         return vec
 
-CONFIGS = {
-    'MAE_TransRNet': configs.get_3DReg_config(),
-}
-
 
 # vv = MAE_TransRNet(CONFIGS['MAE_TransRNet'],(64,256,256))
 # print(vv)

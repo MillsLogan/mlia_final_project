@@ -12,10 +12,12 @@ def one_hot(img, C):
 
 def writeToNpy(path, target, training=False):
 
-    for file in os.listdir(path):
+    for folder in os.listdir(path):
         frames = []
-        for f in os.listdir(os.path.join(path, file)):
-            if f.find('patient') == -1:
+        if not os.path.isdir(os.path.join(path, folder)):
+            continue
+        for f in os.listdir(os.path.join(path, folder)):
+            if f.find('patient') == -1 or f.find('gt') != -1 or f.find("frame") == -1:
                 continue
             idx = f[16:18]
             if idx in frames:
@@ -24,7 +26,7 @@ def writeToNpy(path, target, training=False):
                 frames.append(idx)
 
         if len(frames) != 2:
-            raise RuntimeError('why is not 2')
+            raise RuntimeError(f'got {len(frames)} why is not 2')
 
         if frames[0] < frames[1]:
             MinF = frames[0]
@@ -33,8 +35,8 @@ def writeToNpy(path, target, training=False):
             MinF = frames[1]
             MaxF = frames[0]
 
-        F1 = os.path.join(path, file, file + '_frame' + MinF)
-        F2 = os.path.join(path, file, file + '_frame' + MaxF)
+        F1 = os.path.join(path, folder, folder + '_frame' + MinF)
+        F2 = os.path.join(path, folder, folder + '_frame' + MaxF)
 
         xNmae = F1 + '.nii.gz'
         yNmae = F2 + '.nii.gz'
@@ -56,11 +58,13 @@ def writeToNpy(path, target, training=False):
             ySeg = sitk.GetArrayFromImage(sitk.ReadImage(ySegName))
             newYseg = nd.zoom(ySeg, factor, order=0)
             newYseg = one_hot(newYseg, C=4)
-            np.savez(os.path.join(target, file), x=newX, y=newY, xSeg = newXseg, ySeg=newYseg)
+            np.savez(os.path.join(target, folder), x=newX, y=newY, xSeg = newXseg, ySeg=newYseg)
         else:
-            np.savez(os.path.join(target, file), x=newX, y=newY)
+            np.savez(os.path.join(target, folder), x=newX, y=newY)
 # pass
-
-writeToNpy('./data/training', './npdata/training', training=False)
-writeToNpy('./data/testing', './npdata/testing', training=True)
-writeToNpy('./data/validation', './npdata/validation', training=True)
+os.makedirs('./npdata/training', exist_ok=True)
+os.makedirs('./npdata/testing', exist_ok=True)
+os.makedirs('./npdata/validation', exist_ok=True)
+writeToNpy('./ACDC/database/training', './npdata/training', training=False)
+writeToNpy('./ACDC/database/testing', './npdata/testing', training=True)
+writeToNpy('./ACDC/database/validation', './npdata/validation', training=True)
