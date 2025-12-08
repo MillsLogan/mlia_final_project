@@ -6,7 +6,7 @@ import sys
 from torch.utils.data import DataLoader
 from data_pre import datasets, trans
 import numpy as np
-import torch, models
+import torch
 from torchvision import transforms
 from torch import optim
 import torch.nn as nn
@@ -67,7 +67,6 @@ def main():
     batch_size = 2
     train_dir = './npdata/training'
     val_dir = './npdata/validation'
-    save_dir = 'MAE_TransRNet_reg/'
     lr = 0.0005
     epoch_start = 0
     max_epoch = 500
@@ -184,8 +183,8 @@ def main():
         writer.add_scalar('Loss/train', loss_all.avg, epoch)
         Train_Loss.append(loss_all.avg)
         train_loss = np.array(Train_Loss)
-        # np.save('/home/xiaoxin/MAE_TransRNet/result_train_loss/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
-        # print('Epoch {} loss {:.4f}'.format(epoch, loss_all.avg))
+        np.save('registration_experiments/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
+        print('Epoch {} loss {:.4f}'.format(epoch, loss_all.avg))
 
 
         # Start Validation
@@ -207,16 +206,16 @@ def main():
                 eval_dsc.update(dsc.item(), x.size(0))
                 print("{}-eval_dsc.avg:{}".format(idx,eval_dsc.avg))
         best_mse = max(eval_dsc.avg, best_mse)
-        # save_checkpoint({
-        #     'epoch': epoch + 1,
-        #     'state_dict': model.state_dict(),
-        #     'best_mse': best_mse,
-        #     'optimizer': optimizer.state_dict(),
-        # }, save_dir='./experiments/', filename='Dice-{:.3f}.pth.tar'.format(eval_dsc.avg))
+        save_checkpoint({
+            'epoch': epoch + 1,
+            'state_dict': model.state_dict(),
+            'best_mse': best_mse,
+            'optimizer': optimizer.state_dict(),
+        }, save_dir='./experiments/', filename='Dice-{:.3f}.pth.tar'.format(eval_dsc.avg))
         writer.add_scalar('MSE/validate', eval_dsc.avg, epoch)
         MSE_val_Dice.append(eval_dsc.avg)
         mse_val_dice = np.array(MSE_val_Dice)
-        # np.save('/home/xiaoxin/MAE_TransRNet/result_MSE_Dice/bs_{}_MSE_Dice_epoch_{}'.format(batch_size, epoch + 1), mse_val_dice)
+        np.save('registration_experiments/bs_{}_MSE_Dice_epoch_{}'.format(batch_size, epoch + 1), mse_val_dice)
         plt.switch_backend('agg')
         pred_fig = comput_fig(def_out.unsqueeze(0))
 
@@ -275,4 +274,6 @@ def save_checkpoint(state, save_dir='models', filename='Best_Trans_Reg.pth.tar',
         model_lists = natsorted(glob.glob(save_dir + '*'))
 
 if __name__ == '__main__':
+    os.makedirs('./experiments/', exist_ok=True)
+    os.makedirs('./registration_experiments/', exist_ok=True)
     main()
