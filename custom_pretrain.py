@@ -14,20 +14,16 @@ itk.ProcessObject.SetGlobalWarningDisplay(False)
 from monai.utils.misc import set_determinism
 from monai.data import Dataset as monaiDataset
 from monai.data import DataLoader as monaiDataLoader
-from monai.losses import ContrastiveLoss
 from monai.transforms import (
     LoadImaged,
     Compose,
     CropForegroundd,
-    CopyItemsd,
+    Resized,
     SpatialPadd,
     EnsureChannelFirstd,
     Spacingd,
-    OneOf,
+    Lambda,
     ScaleIntensityRanged,
-    RandSpatialCropSamplesd,
-    RandCoarseDropoutd,
-    RandCoarseShuffled
 )
 
 # from Pretrain_MAE.MAE_3d import MAE
@@ -112,7 +108,10 @@ def get_training_transform_pipeline() -> Compose:
     ```
     """
 
-
+    def reorder(data):
+        data["image"] = np.transpose(data["image"], (0, 3, 2, 1))
+        return data
+    
     return Compose(
         [
             # Read the image from file
@@ -136,31 +135,15 @@ def get_training_transform_pipeline() -> Compose:
             # Checks if the image is at least 64x128x128, if not pads with zeros
             SpatialPadd(keys=["image"], spatial_size=(64,128,128)),
             # Randomly extracts 2 samples of size 64x128x128 from the volume
-            RandSpatialCropSamplesd(keys=["image"], roi_size=(64,128,128), random_size=False, num_samples=2),
-            # Copy the image to create 3 versions: gt_image (unaltered truth), image (to be masked), image_2 (another to be masked)
-            # CopyItemsd(keys=["image"], times=2, names=["gt_image", "image_2"], allow_missing_keys=False),
-            # # Chooses between two types of patch masking strategies
-            # OneOf(transforms=[
-            #     # Randomly drops out 6 5x5x5 patches (Creates 6 holes of zeros)
-            #     RandCoarseDropoutd(keys=["image"], prob=1.0, holes=6, spatial_size=5, dropout_holes=True,
-            #                     max_spatial_size=32),
-            #     # Randomly KEEPS 6 20x20x20 patches (Zeros out everything else)
-            #     RandCoarseDropoutd(keys=["image"], prob=1.0, holes=6, spatial_size=20, dropout_holes=False,
-            #                     max_spatial_size=64),
-            #     ]
-            # ),
-            # # Randomly shuffles 10 8x8x8 patches within the image with 80% probability
-            # RandCoarseShuffled(keys=["image"], prob=0.8, holes=10, spatial_size=8),
-
-            # # Same augmentations for image_2, separate calls are made to ensure different random augmentations
-            # OneOf(transforms=[
-            #     RandCoarseDropoutd(keys=["image_2"], prob=1.0, holes=6, spatial_size=5, dropout_holes=True,
-            #                     max_spatial_size=32),
-            #     RandCoarseDropoutd(keys=["image_2"], prob=1.0, holes=6, spatial_size=20, dropout_holes=False,
-            #                     max_spatial_size=64),
-            #     ]
-            # ),
-            # RandCoarseShuffled(keys=["image_2"], prob=0.8, holes=10, spatial_size=8)
+            Lambda(func=reorder),
+            CropForegroundd(keys=["image"], source_key="image"),
+            # NOTE: SpatialPadd and RandSpatialCrop are removed.
+            # We replace them with Resized to force the shape.
+            Resized(
+                keys=["image"], 
+                spatial_size=(64, 128, 128), 
+                mode="trilinear" # Important for 3D medical images to stay smooth
+            )
         ]
     )
 
@@ -199,16 +182,7 @@ def train_model_with_masked_error(
         for batch_data in train_loader:
             step += 1
             
-            inputs = batch_data["image"].to(device)          # masked image
-            
-            # gt_images = batch_data["gt_image"].to(device)    # ground truth image
-            # inputs_2 = batch_data["image_2"].to(device)      # second masked image
-
-            # This is different from the original code
-            # This stacks the two images along the batch dimension
-            # So if batch size is 2, inputs will have 4 images: [img1, img2, img1_2, img2_2]
-            # This allows processing both images in one forward pass
-            # inputs = torch.cat((inputs, inputs_2), dim=0)
+            inputs = batch_data["image"].to(device)
 
             optimizer.zero_grad()
 
@@ -438,7 +412,7 @@ def main():
     # I'm assuming they meant the encoder only, but there is still a discrepancy of ~2.3M parameters
     
     # Training parameters
-    max_epochs = 500 # From paper
+    max_epochs = 1 # From paper
     val_interval = 1 # From code, after how many epochs to validate
     batch_size = 2 # From paper
     lr = 1e-4 # From paper
