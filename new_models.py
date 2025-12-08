@@ -341,7 +341,7 @@ class MAETransformer(nn.Module):
 
         return ids_keep, ids_remove
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, masked_loss: bool=True) -> tuple[torch.Tensor, torch.Tensor|None]:
         device = x.device
 
         # Step 1: Convert images to patches
@@ -387,6 +387,10 @@ class MAETransformer(nn.Module):
             p1=self.patch_size,
             p2=self.patch_size,
             p3=self.patch_size,
-            c=x.size(1)
+            c=1
         )
-        return reconstructed_images, F.mse_loss(pred_masked, targets_masked)
+        if masked_loss:
+            loss = F.mse_loss(pred_masked, targets_masked)
+            return reconstructed_images, loss
+        
+        return reconstructed_images, None

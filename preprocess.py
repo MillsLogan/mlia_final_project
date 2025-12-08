@@ -65,6 +65,6 @@ def writeToNpy(path, target, training=False):
 os.makedirs('./npdata/training', exist_ok=True)
 os.makedirs('./npdata/testing', exist_ok=True)
 os.makedirs('./npdata/validation', exist_ok=True)
-writeToNpy('./ACDC/database/training', './npdata/training', training=False)
+# writeToNpy('./ACDC/database/training', './npdata/training', training=True)
 writeToNpy('./ACDC/database/testing', './npdata/testing', training=True)
 writeToNpy('./ACDC/database/validation', './npdata/validation', training=True)

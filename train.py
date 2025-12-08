@@ -1,5 +1,6 @@
 from torch.utils.tensorboard import SummaryWriter
 import os, glob
+import new_models
 from tools import utils,losses
 import sys
 from torch.utils.data import DataLoader
@@ -51,15 +52,32 @@ def main():
     lr = 0.0005
     epoch_start = 0
     max_epoch = 500
-    config_MAE = CONFIGS_reg['MAE_TransRNet']
     reg_model = utils.register_model((64,128,128), 'nearest')
     reg_model.cuda()
     reg_model_bilin = utils.register_model((64,128,128), 'bilinear')
     reg_model_bilin.cuda()
-    model = models.MAE_Transformer(config_MAE, img_size=(64,128,128))
-    use_pretrained = 1
-    pretrained_path = os.path.normpath("pretrain_experiments/mae_pretrained_model.pth")
-    # pretrained_path = os.path.normpath('/home/xiaoxin/MAE_TransRNet/tmp/pycharm_project_858/Pretrain_MAE/pretrain_model/MAE_Base_Pretrain_ACDC.pt')
+    model = new_models.MAETransformer(
+        img_size=(64,128,128),
+        patch_size=16,
+        encoder_dim=768,
+        mlp_dim=3072,
+        masking_ratio = 0.75,   # the paper recommended 75% masked patches
+        decoder_dim = 512,      # paper showed good results with just 512
+        dec_num_layers = 6,       # anywhere from 1 to 8
+        dec_num_heads=4,
+        enc_num_layers=12,
+        enc_num_heads=12
+    )
+    weights = torch.load('pretrain_experiments/fully_trained_weights.pth')
+    model.load_state_dict(weights, strict=True)
+
+    # Change the model to accept 2 channel input
+    first_layer = model.patch_to_encoder
+    old_weights = first_layer.weight.data
+    new_weights = old_weights.repeat_interleave(2, dim=1)
+    first_layer.weight.data = new_weights / 2.0
+    model.patch_to_encoder = first_layer
+    
     updated_lr = lr
 
     model.cuda()
@@ -82,20 +100,20 @@ def main():
     criterions = [criterion]
 
     # Load MAE backbone weights into Registration Network
-    if use_pretrained == 1:
-        print('Loading Weights from the Path {}'.format(pretrained_path))
-        MAE_dict = torch.load(pretrained_path)
-        MAE_weights = MAE_dict['state_dict']
+    # if use_pretrained == 1:
+    #     print('Loading Weights from the Path {}'.format(pretrained_path))
+    #     MAE_dict = torch.load(pretrained_path)
+    #     MAE_weights = MAE_dict['state_dict']
 
-        model_dict = model.MAE.state_dict()
-        MAE_weights = {k: v for k, v in MAE_weights.items() if k in model_dict}
-        model_dict.update(MAE_weights)
-        model.MAE.load_state_dict(model_dict)
-        del model_dict, MAE_weights, MAE_dict
-        print('Pretrained Weights Succesfully Loaded !')
+    #     model_dict = model.MAE.state_dict()
+    #     MAE_weights = {k: v for k, v in MAE_weights.items() if k in model_dict}
+    #     model_dict.update(MAE_weights)
+    #     model.MAE.load_state_dict(model_dict)
+    #     del model_dict, MAE_weights, MAE_dict
+    #     print('Pretrained Weights Succesfully Loaded !')
 
-    elif use_pretrained == 0:
-        print('No weights were loaded, all weights being used are randomly initialized!')
+    # elif use_pretrained == 0:
+    #     print('No weights were loaded, all weights being used are randomly initialized!')
 
     # prepare deformation loss
     criterions += [losses.Grad3d(penalty='l2')]
@@ -119,11 +137,11 @@ def main():
             x = data[0]
             y = data[1]
             x_in = torch.cat((x,y), dim=1)
-            output = model(x_in)
+            output, _ = model(x_in, False)
             loss = 0
             loss_vals = []
             for n, loss_function in enumerate(criterions):
-                curr_loss = loss_function(output[n], y) * MAE_weights[n]
+                curr_loss = loss_function(output, y)# * MAE_weights[n]
                 loss_vals.append(curr_loss)
                 loss += curr_loss
             loss_all.update(loss.item(), y.numel())
@@ -138,9 +156,9 @@ def main():
             # flip fixed and moving images
             loss = 0
             x_in = torch.cat((y, x), dim=1)
-            output = model(x_in)
+            output, _ = model(x_in, False)
             for n, loss_function in enumerate(criterions):
-                curr_loss = loss_function(output[n], x) * MAE_weights[n]
+                curr_loss = loss_function(output, x)# * MAE_weights[n]
                 loss_vals[n] += curr_loss
                 loss += curr_loss
             loss_all.update(loss.item(), y.numel())
@@ -155,8 +173,8 @@ def main():
         writer.add_scalar('Loss/train', loss_all.avg, epoch)
         Train_Loss.append(loss_all.avg)
         train_loss = np.array(Train_Loss)
-        np.save('/home/xiaoxin/MAE_TransRNet/result_train_loss/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
-        print('Epoch {} loss {:.4f}'.format(epoch, loss_all.avg))
+        # np.save('/home/xiaoxin/MAE_TransRNet/result_train_loss/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
+        # print('Epoch {} loss {:.4f}'.format(epoch, loss_all.avg))
 
 
         # Start Validation
@@ -171,27 +189,27 @@ def main():
                 # print("y.shape:",y.shape)
                 x_seg = data[2]
                 y_seg = data[3]
-                # print("x_seg.shape:",x_seg.shape)
-                # print("y_seg.shape:",y_seg.shape)
+                print("x_seg.shape:",x_seg.shape)
+                print("y_seg.shape:",y_seg.shape)
                 # x = x.squeeze(0).permute(1, 0, 2, 3)
                 # y = y.squeeze(0).permute(1, 0, 2, 3)
                 x_in = torch.cat((x, y), dim=1)
-                output = model(x_in)
-                def_out = reg_model([x_seg[:, 0, ...].cuda().float(), output[1].cuda()])
+                output, _ = model(x_in, False)
+                def_out = reg_model([x_seg[:, 0, ...].cuda().float(), output.cuda()])
                 dsc = utils.dice_val(def_out.long(), y_seg[:, 0, ...].long())
                 eval_dsc.update(dsc.item(), x.size(0))
                 print("{}-eval_dsc.avg:{}".format(idx,eval_dsc.avg))
         best_mse = max(eval_dsc.avg, best_mse)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_mse': best_mse,
-            'optimizer': optimizer.state_dict(),
-        }, save_dir='./experiments/', filename='Dice-{:.3f}.pth.tar'.format(eval_dsc.avg))
+        # save_checkpoint({
+        #     'epoch': epoch + 1,
+        #     'state_dict': model.state_dict(),
+        #     'best_mse': best_mse,
+        #     'optimizer': optimizer.state_dict(),
+        # }, save_dir='./experiments/', filename='Dice-{:.3f}.pth.tar'.format(eval_dsc.avg))
         writer.add_scalar('MSE/validate', eval_dsc.avg, epoch)
         MSE_val_Dice.append(eval_dsc.avg)
         mse_val_dice = np.array(MSE_val_Dice)
-        np.save('/home/xiaoxin/MAE_TransRNet/result_MSE_Dice/bs_{}_MSE_Dice_epoch_{}'.format(batch_size, epoch + 1), mse_val_dice)
+        # np.save('/home/xiaoxin/MAE_TransRNet/result_MSE_Dice/bs_{}_MSE_Dice_epoch_{}'.format(batch_size, epoch + 1), mse_val_dice)
         plt.switch_backend('agg')
         pred_fig = comput_fig(def_out.unsqueeze(0))
 
