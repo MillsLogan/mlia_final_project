@@ -44,6 +44,25 @@ class AverageMeter(object):
 def MSE_torch(x, y):
     return torch.mean((x - y) ** 2)
 
+
+class CNN(torch.nn.Module):
+    """
+    Added to map the input image to the required encoder dimension
+    """
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = torch.nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
+        # Maintain spatial dimensions
+        self.norm1 = torch.nn.InstanceNorm3d(out_channels)
+        self.act1 = torch.nn.GELU()
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.act1(x)
+        return x
+
+
 def main():
     batch_size = 2
     train_dir = './npdata/training'
@@ -70,13 +89,17 @@ def main():
     )
     weights = torch.load('pretrain_experiments/fully_trained_weights.pth')
     model.load_state_dict(weights, strict=True)
+    cnn_encoder = CNN(in_channels=2, out_channels=1)
+    cnn_decoder = CNN(in_channels=1, out_channels=3) # Map to 3 channels for the deformation field
+    cnn_encoder.cuda()
+    cnn_decoder.cuda()
 
     # Change the model to accept 2 channel input
-    first_layer = model.patch_to_encoder
-    old_weights = first_layer.weight.data
-    new_weights = old_weights.repeat_interleave(2, dim=1)
-    first_layer.weight.data = new_weights / 2.0
-    model.patch_to_encoder = first_layer
+    # first_layer = model.patch_to_encoder
+    # old_weights = first_layer.weight.data
+    # new_weights = old_weights.repeat_interleave(2, dim=1)
+    # first_layer.weight.data = new_weights / 2.0
+    # model.patch_to_encoder = first_layer
     
     updated_lr = lr
 
@@ -137,37 +160,25 @@ def main():
             x = data[0]
             y = data[1]
             x_in = torch.cat((x,y), dim=1)
+            x_in = cnn_encoder(x_in) # Map 2 channels to 1 channel
             output, _ = model(x_in, False)
+            output = cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+            warped_output = reg_model([x, output])
             loss = 0
             loss_vals = []
-            for n, loss_function in enumerate(criterions):
-                curr_loss = loss_function(output, y)# * MAE_weights[n]
-                loss_vals.append(curr_loss)
-                loss += curr_loss
+            sim_loss = criterions[0](warped_output, y)
+            loss_vals.append(sim_loss)
+            loss += sim_loss
+            grad_loss = criterions[1](output, y)
+            loss_vals.append(grad_loss)
+            loss += grad_loss
+            
             loss_all.update(loss.item(), y.numel())
             # compute gradient and do SGD step
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            # cosine_schedule.step()
-
-            del x_in
-            del output
-            # flip fixed and moving images
-            loss = 0
-            x_in = torch.cat((y, x), dim=1)
-            output, _ = model(x_in, False)
-            for n, loss_function in enumerate(criterions):
-                curr_loss = loss_function(output, x)# * MAE_weights[n]
-                loss_vals[n] += curr_loss
-                loss += curr_loss
-            loss_all.update(loss.item(), y.numel())
-            # compute gradient and do SGD step
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            # cosine_schedule.step()
-
             print('Iter {} of {} loss {:.4f}, Img Sim: {:.6f}, Reg: {:.6f}'.format(idx, len(train_loader), loss.item(), loss_vals[0].item()/2, loss_vals[1].item()/2))
 
         writer.add_scalar('Loss/train', loss_all.avg, epoch)
@@ -184,17 +195,13 @@ def main():
                 model.eval()
                 data = [t.cuda() for t in data]
                 x = data[0]
-                # print("x.shape:",x.shape) # [2,1,64,256,256]
                 y = data[1]
-                # print("y.shape:",y.shape)
                 x_seg = data[2]
                 y_seg = data[3]
-                print("x_seg.shape:",x_seg.shape)
-                print("y_seg.shape:",y_seg.shape)
-                # x = x.squeeze(0).permute(1, 0, 2, 3)
-                # y = y.squeeze(0).permute(1, 0, 2, 3)
                 x_in = torch.cat((x, y), dim=1)
+                x_in = cnn_encoder(x_in) # Map 2 channels to 1 channel
                 output, _ = model(x_in, False)
+                output = cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
                 def_out = reg_model([x_seg[:, 0, ...].cuda().float(), output.cuda()])
                 dsc = utils.dice_val(def_out.long(), y_seg[:, 0, ...].long())
                 eval_dsc.update(dsc.item(), x.size(0))

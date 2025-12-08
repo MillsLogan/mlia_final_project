@@ -7,24 +7,9 @@ import os
 import json
 import torch
 import numpy as np
-import SimpleITK as sitk
-sitk.ProcessObject_SetGlobalWarningDisplay(False)
-import itk
-itk.ProcessObject.SetGlobalWarningDisplay(False)
-from monai.utils.misc import set_determinism
 from monai.data import Dataset as monaiDataset
 from monai.data import DataLoader as monaiDataLoader
-from monai.transforms import (
-    LoadImaged,
-    Compose,
-    CropForegroundd,
-    Resized,
-    SpatialPadd,
-    EnsureChannelFirstd,
-    Spacingd,
-    Lambda,
-    ScaleIntensityRanged,
-)
+
 
 # from Pretrain_MAE.MAE_3d import MAE
 from new_models import MAETransformer
@@ -78,74 +63,6 @@ def load_dataset(print_ds_size: bool=VERBOSE) -> tuple[dict, dict]:
 
     return data["training"], data["validation"]
 
-def get_training_transform_pipeline() -> Compose:
-    """
-    Returns the training transformation pipeline using MONAI transforms.
-    The pipeline explanation is included in the comments below. Generally,
-    it takes a dictionary with key "image" and applies a series of transformations
-    to prepare the data for training.
-    
-    Example Input:
-    ```
-    {"image": <image_data> }
-    ```
-    Example Output:
-    ```
-    [
-        # Creates two crops of the image so each input results in two training samples
-        # image 1 and image 2 are different augmentations of the same crop
-        { # Crop 1, 
-            "image": <transformed_image_1>,
-            "gt_image": <ground_truth_image>,
-            "image_2": <transformed_image_2>
-        },
-        { # Crop 2
-            "image": <transformed_image_1>,
-            "gt_image": <ground_truth_image>,
-            "image_2": <transformed_image_2>
-        }
-    ]
-    ```
-    """
-
-    def reorder(data):
-        data["image"] = np.transpose(data["image"], (0, 3, 2, 1))
-        return data
-    
-    return Compose(
-        [
-            # Read the image from file
-            LoadImaged(keys=["image"], reader="itkreader"),
-            # Ensures the channel dimension is first, if it's grey-scale image adds a channel dim
-            # e.g., (H, W, D) -> (1, H, W, D)
-            EnsureChannelFirstd(keys=["image"]),
-            # Ensures the image is spaced correctly, i.e., each pixel represents 2mm x 2mm x 2mm
-            Spacingd(keys=["image"], pixdim=(2.0, 2.0, 2.0), mode=("bilinear")),
-            # Scales intensity to [0.0, 1.0] range clipping values outside [-57, 164]
-            ScaleIntensityRanged(
-                keys=["image"],
-                a_min=-57,
-                a_max=164,
-                b_min=0.0,
-                b_max=1.0,
-                clip=True
-            ),
-            # Crops the foreground of the image, trimming out black space to reduce memory
-            CropForegroundd(keys=["image"], source_key="image"),
-            # Checks if the image is at least 64x128x128, if not pads with zeros
-            SpatialPadd(keys=["image"], spatial_size=(64,128,128)),
-            # Randomly extracts 2 samples of size 64x128x128 from the volume
-            Lambda(func=reorder),
-            CropForegroundd(keys=["image"], source_key="image"),
-            # NOTE: SpatialPadd and RandSpatialCrop are removed.
-            # We replace them with Resized to force the shape.
-            Resized(
-                keys=["image"], 
-                spatial_size=(64, 128, 128), 
-                mode="trilinear" # Important for 3D medical images to stay smooth
-            )
-        ]
-    )
 
 def train_model_with_masked_error(
     model: MAETransformer,
@@ -382,11 +299,6 @@ def train_model_with_full_mse_error(
 def main():
     # Load dataset
     train_ds, val_ds = load_dataset()
-
-    # Set determinism for reproducibility
-    set_determinism(seed=123)
-
-    training_transforms = get_training_transform_pipeline()
 
     # Base model from paper
     # Patch size: 16
