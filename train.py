@@ -62,6 +62,41 @@ class CNN(torch.nn.Module):
         x = self.act1(x)
         return x
 
+class RegistrationNet(torch.nn.Module):
+    def __init__(self, 
+                img_size=(64,128,128),
+                patch_size=16,
+                encoder_dim=768,
+                mlp_dim=3072,
+                masking_ratio = 0.75,   # the paper recommended 75% masked patches
+                decoder_dim = 512,      # paper showed good results with just 512
+                dec_num_layers = 6,       # anywhere from 1 to 8
+                dec_num_heads=4,
+                enc_num_layers=12,
+                enc_num_heads=12,
+                in_channels=2,
+                out_channels=3):
+        super().__init__()
+        self.MAE = new_models.MAETransformer(
+            img_size=img_size,
+            patch_size=patch_size,
+            encoder_dim=encoder_dim,
+            mlp_dim=mlp_dim,
+            masking_ratio = masking_ratio,
+            decoder_dim = decoder_dim,
+            dec_num_layers = dec_num_layers,
+            dec_num_heads=dec_num_heads,
+            enc_num_layers=enc_num_layers,
+            enc_num_heads=enc_num_heads
+        )
+        self.cnn_encoder = CNN(in_channels=in_channels, out_channels=1)
+        self.cnn_decoder = CNN(in_channels=1, out_channels=out_channels) # Map to 3 channels for the deformation field
+
+    def forward(self, x, masked_loss=True):
+        x = self.cnn_encoder(x) # Map 2 channels to 1 channel
+        output, _ = self.MAE(x, masked_loss)
+        output = self.cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+        return output
 
 def main():
     batch_size = 2
@@ -74,7 +109,7 @@ def main():
     reg_model.cuda()
     reg_model_bilin = utils.register_model((64,128,128), 'bilinear')
     reg_model_bilin.cuda()
-    model = new_models.MAETransformer(
+    model = RegistrationNet(
         img_size=(64,128,128),
         patch_size=16,
         encoder_dim=768,
@@ -84,14 +119,10 @@ def main():
         dec_num_layers = 6,       # anywhere from 1 to 8
         dec_num_heads=4,
         enc_num_layers=12,
-        enc_num_heads=12
+        enc_num_heads=12,
+        in_channels=2,
+        out_channels=3
     )
-    weights = torch.load('pretrain_experiments/fully_trained_weights.pth')
-    model.load_state_dict(weights, strict=True)
-    cnn_encoder = CNN(in_channels=2, out_channels=1)
-    cnn_decoder = CNN(in_channels=1, out_channels=3) # Map to 3 channels for the deformation field
-    cnn_encoder.cuda()
-    cnn_decoder.cuda()
 
     # Change the model to accept 2 channel input
     # first_layer = model.patch_to_encoder
@@ -159,9 +190,7 @@ def main():
             x = data[0]
             y = data[1]
             x_in = torch.cat((x,y), dim=1)
-            x_in = cnn_encoder(x_in) # Map 2 channels to 1 channel
-            output, _ = model(x_in, False)
-            output = cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+            output = model(x_in)
             warped_output = reg_model([x, output])
             loss = 0
             loss_vals = []
@@ -198,9 +227,7 @@ def main():
                 x_seg = data[2]
                 y_seg = data[3]
                 x_in = torch.cat((x, y), dim=1)
-                x_in = cnn_encoder(x_in) # Map 2 channels to 1 channel
-                output, _ = model(x_in, False)
-                output = cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+                output = model(x_in)
                 def_out = reg_model([x_seg[:, 0, ...].cuda().float(), output.cuda()])
                 dsc = utils.dice_val(def_out.long(), y_seg[:, 0, ...].long())
                 eval_dsc.update(dsc.item(), x.size(0))
