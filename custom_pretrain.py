@@ -7,12 +7,9 @@ import os
 import json
 import torch
 import numpy as np
-from monai.data import Dataset as monaiDataset
-from monai.data import DataLoader as monaiDataLoader
 
 
 # from Pretrain_MAE.MAE_3d import MAE
-from data_pre.datasets import CardiacDataset
 from new_models import MAETransformer
 
 class PretrainDataset(torch.utils.data.Dataset):
@@ -99,8 +96,8 @@ def load_dataset(print_ds_size: bool=VERBOSE) -> tuple[dict, dict]:
 
 def train_model_with_masked_error(
     model: MAETransformer,
-    train_loader: monaiDataLoader,
-    val_loader: monaiDataLoader,
+    train_loader: torch.utils.data.DataLoader,
+    val_loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     max_epochs: int,
     val_interval: int
@@ -132,7 +129,7 @@ def train_model_with_masked_error(
         for batch_data in train_loader:
             step += 1
             
-            inputs = batch_data["image"].to(device)
+            inputs = batch_data.to(device)
 
             optimizer.zero_grad()
 
@@ -169,7 +166,7 @@ def train_model_with_masked_error(
             with torch.no_grad():
                 for val_data in val_loader:
                     val_step += 1
-                    val_inputs = val_data["image"].to(device)
+                    val_inputs = val_data.to(device)
 
                     val_reconstructions, val_masked_recon_loss = model(val_inputs)
                     val_mse_loss_batch = mse_loss(val_reconstructions, val_inputs)
@@ -210,8 +207,8 @@ def train_model_with_masked_error(
 
 def train_model_with_full_mse_error(
     model: MAETransformer,
-    train_loader: monaiDataLoader,
-    val_loader: monaiDataLoader,
+    train_loader: torch.utils.data.DataLoader,
+    val_loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     max_epochs: int,
     val_interval: int
@@ -372,12 +369,11 @@ def main():
     train_dataset = PretrainDataset(file_path="./npdata/training", transforms=lambda x: x)
     val_dataset = PretrainDataset(file_path="./npdata/validation", transforms=lambda x: x)
     # train_dataset = monaiDataset(data=train_ds, transform=training_transforms)
-    train_loader = monaiDataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     # Validation Dataset and DataLoader
     # val_dataset = monaiDataset(data=val_ds, transform=training_transforms)
-    val_loader = monaiDataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=workers)
-
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=workers)
     # train_model_with_masked_error(
     #     model=model,
     #     train_loader=train_loader,
