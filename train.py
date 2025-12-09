@@ -103,6 +103,7 @@ def main():
     train_dir = './npdata/training'
     val_dir = './npdata/validation'
     lr = 0.0005
+    reg_weight = 0.01 # Weight for deformation loss
     epoch_start = 0
     max_epoch = 500
     reg_model = utils.register_model((64,128,128), 'nearest')
@@ -199,7 +200,7 @@ def main():
             loss += sim_loss
             grad_loss = criterions[1](output, y)
             loss_vals.append(grad_loss)
-            loss += grad_loss
+            loss += grad_loss * reg_weight
             
             loss_all.update(loss.item(), y.numel())
             # compute gradient and do SGD step
@@ -207,7 +208,7 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            print('Iter {} of {} loss {:.4f}, Img Sim: {:.6f}, Reg: {:.6f}'.format(idx, len(train_loader), loss.item(), loss_vals[0].item()/2, loss_vals[1].item()/2))
+            print('Iter {} of {} loss {:.4f}, Img Sim: {:.6f}, Reg: {:.6f} Reg (unweighted): {:.6f}'.format(idx, len(train_loader), loss.item(), loss_vals[0].item()/2, loss_vals[1].item() * reg_weight, loss_vals[1].item()))
 
         writer.add_scalar('Loss/train', loss_all.avg, epoch)
         Train_Loss.append(loss_all.avg)
