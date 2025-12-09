@@ -12,8 +12,41 @@ from monai.data import DataLoader as monaiDataLoader
 
 
 # from Pretrain_MAE.MAE_3d import MAE
+from data_pre.datasets import CardiacDataset
 from new_models import MAETransformer
 
+class PretrainDataset(torch.utils.data.Dataset):
+    def __init__(self, file_path, transforms=None):
+        self.file_path = file_path
+        self.files = os.listdir(file_path)
+        self.transforms = transforms
+
+    def __len__(self):
+        return len(self.files) * 2 # There are two images per patient
+    
+    def __getitem__(self, idx):
+        patient_idx = idx // 2
+        image_variant = idx % 2  # 0 or 1
+
+        file = self.files[patient_idx]
+        data = np.load(os.path.join(self.file_path, file))
+        if image_variant == 0:
+            img = data['x'].astype(np.float32)
+        else:
+            img = data['y'].astype(np.float32)
+
+        img = img[None, ...]  # Add channel dimension
+
+        if self.transforms:
+            img = self.transforms(img)
+
+        img = np.ascontiguousarray(img)  # [C,H,W,D]
+        img = torch.from_numpy(img)
+
+        # Normalize to [0, 1]
+        img = (img - img.min()) / (img.max() - img.min())
+
+        return img
 
 def get_image_path(json_entry: str) -> str:
     """
@@ -207,11 +240,10 @@ def train_model_with_full_mse_error(
         epoch_full_mae_recon_loss = 0
         step = 0
 
-        for batch_data in train_loader:
+        for x in train_loader:
             step += 1
             
-            inputs = batch_data["image"].to(device)          # masked image
-            
+            inputs = x.to(device)
             # gt_images = batch_data["gt_image"].to(device)    # ground truth image
             # inputs_2 = batch_data["image_2"].to(device)      # second masked image
 
@@ -257,7 +289,7 @@ def train_model_with_full_mse_error(
             with torch.no_grad():
                 for val_data in val_loader:
                     val_step += 1
-                    val_inputs = val_data["image"].to(device)
+                    val_inputs = val_data.to(device)
 
                     val_reconstructions, val_masked_recon_loss = model(val_inputs)
                     val_mse_loss_batch = mse_loss(val_reconstructions, val_inputs)
@@ -298,7 +330,7 @@ def train_model_with_full_mse_error(
 
 def main():
     # Load dataset
-    train_ds, val_ds = load_dataset()
+    # train_ds, val_ds = load_dataset()
 
     # Base model from paper
     # Patch size: 16
@@ -324,7 +356,7 @@ def main():
     # I'm assuming they meant the encoder only, but there is still a discrepancy of ~2.3M parameters
     
     # Training parameters
-    max_epochs = 1 # From paper
+    max_epochs = 500 # From paper
     val_interval = 1 # From code, after how many epochs to validate
     batch_size = 2 # From paper
     lr = 1e-4 # From paper
@@ -337,11 +369,13 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Train Dataset and DataLoader
-    train_dataset = monaiDataset(data=train_ds, transform=training_transforms)
+    train_dataset = PretrainDataset(file_path="./npdata/training", transforms=lambda x: x)
+    val_dataset = PretrainDataset(file_path="./npdata/validation", transforms=lambda x: x)
+    # train_dataset = monaiDataset(data=train_ds, transform=training_transforms)
     train_loader = monaiDataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     # Validation Dataset and DataLoader
-    val_dataset = monaiDataset(data=val_ds, transform=training_transforms)
+    # val_dataset = monaiDataset(data=val_ds, transform=training_transforms)
     val_loader = monaiDataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=workers)
 
     # train_model_with_masked_error(
