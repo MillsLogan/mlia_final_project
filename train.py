@@ -99,11 +99,14 @@ class RegistrationNet(torch.nn.Module):
         return output
 
 def main():
-    batch_size = 2
+    logdir = './experiments/'
+    save_loss_dir = './experiments/losses/'
+    os.makedirs(save_loss_dir, exist_ok=True)
+    batch_size = 1
     train_dir = './npdata/training'
     val_dir = './npdata/validation'
-    lr = 0.0005
-    reg_weight = 0.01 # Weight for deformation loss
+    lr = 1e-4
+    reg_weight = 0.01 # Weight for flow loss
     epoch_start = 0
     max_epoch = 500
     reg_model = utils.register_model((64,128,128), 'nearest')
@@ -148,10 +151,10 @@ def main():
     train_loader = DataLoader(train_set, batch_size=batch_size,shuffle=True, num_workers=0, pin_memory=True)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, drop_last=True)
 
+    x, y = next(iter(train_loader))
+
     optimizer = optim.Adam(model.parameters(), lr=updated_lr, weight_decay=0, amsgrad=True)
     # optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0, amsgrad=True)
-    criterion = nn.MSELoss()
-    criterions = [criterion]
 
     # Load MAE backbone weights into Registration Network
     # if use_pretrained == 1:
@@ -170,80 +173,114 @@ def main():
     #     print('No weights were loaded, all weights being used are randomly initialized!')
 
     # prepare deformation loss
-    criterions += [losses.Grad3d(penalty='l2')]
     # cosine_schedule = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=20, eta_min=1e-9)
     best_mse = 0
-    writer = SummaryWriter(log_dir='MAE_TransRNet_log')
+    writer = SummaryWriter(log_dir=logdir)
 
-    Train_Loss = []
-    MSE_val_Dice = []
+    training_grad_loss_vals = []
+    training_mse_loss_vals = []
+    training_weighted_grad_loss_vals = []
+    
+    validation_grad_loss_vals = []
+    validation_mse_loss_vals = []
+    validation_weighted_grad_loss_vals = []
+    validation_dsc_vals = []
+
+    mse_loss = torch.nn.MSELoss()
+    grad_loss = losses.Grad3d(penalty='l2')
+    
 
     for epoch in range(epoch_start, max_epoch):
         print('Training Starts')
         # Start Training
-        loss_all = AverageMeter()
         idx = 0
-        for data in train_loader:
+        tot_sim_loss = 0
+        tot_grad_loss = 0
+        for x, y in train_loader:
             idx += 1
             model.train()
-            adjust_learning_rate(optimizer, epoch, max_epoch, lr)
-            data = [t.cuda() for t in data]
-            x = data[0]
-            y = data[1]
+            # Turn off learning rate adjustment
+            # adjust_learning_rate(optimizer, epoch, max_epoch, lr)
+            x = x.cuda()
+            y = y.cuda()
             x_in = torch.cat((x,y), dim=1)
-            output = model(x_in)
-            warped_output = reg_model([x, output])
-            loss = 0
-            loss_vals = []
-            sim_loss = criterions[0](warped_output, y)
-            loss_vals.append(sim_loss)
-            loss += sim_loss
-            grad_loss = criterions[1](output, y)
-            loss_vals.append(grad_loss)
-            loss += grad_loss * reg_weight
-            
-            loss_all.update(loss.item(), y.numel())
-            # compute gradient and do SGD step
+            deformation_field = model(x_in)
+            warped_output = reg_model([x, deformation_field])
+            sim_loss = mse_loss(warped_output, y)
+            tot_sim_loss += sim_loss.item()
+            flow_loss = grad_loss(deformation_field, None)
+            tot_grad_loss += flow_loss.item()
+            training_grad_loss_vals.append(flow_loss.item())
+            training_mse_loss_vals.append(sim_loss.item())
+            training_weighted_grad_loss_vals.append(flow_loss.item() * reg_weight)
+            loss = sim_loss + flow_loss * reg_weight
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            print('Iter {} of {} loss {:.4f}, Img Sim: {:.6f}, Reg: {:.6f} Reg (unweighted): {:.6f}'.format(idx, len(train_loader), loss.item(), loss_vals[0].item()/2, loss_vals[1].item() * reg_weight, loss_vals[1].item()))
-
-        writer.add_scalar('Loss/train', loss_all.avg, epoch)
-        Train_Loss.append(loss_all.avg)
-        train_loss = np.array(Train_Loss)
-        np.save('registration_experiments/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
-        print('Epoch {} loss {:.4f}'.format(epoch, loss_all.avg))
+            print(f"Epoch [{epoch+1}/{max_epoch}], Step [{idx}/{len(train_loader)}] - Loss: {sim_loss + flow_loss * reg_weight:.4f} - Sim Loss: {sim_loss:.4f} - Flow Loss: {flow_loss * reg_weight:.4f} - Flow Loss (unweighted): {flow_loss:.4f}")
+        writer.add_scalar('Loss/train', tot_sim_loss + tot_grad_loss * reg_weight, epoch)
+        writer.add_scalar('Sim_Loss/train', tot_sim_loss, epoch)
+        writer.add_scalar('Flow_Loss/train', tot_grad_loss * reg_weight, epoch)
+        np.savez(f'{save_loss_dir}/training_loss_epoch_{epoch+1}.npz',
+                 training_mse_loss=np.array(training_mse_loss_vals),
+                 training_grad_loss=np.array(training_grad_loss_vals),
+                 training_weighted_grad_loss=np.array(training_weighted_grad_loss_vals))
+        
+        print(f"Epoch [{epoch+1}/{max_epoch}] - Training Losses Saved.")
 
 
         # Start Validation
-        eval_dsc = AverageMeter()
+        tot_sim_loss = 0
+        tot_grad_loss = 0
+        dsc_per_class = 0
         with torch.no_grad():
-            for idx, data in enumerate(val_loader):
+            for idx, (x, y, x_seg, y_seg) in enumerate(val_loader):
                 model.eval()
-                data = [t.cuda() for t in data]
-                x = data[0]
-                y = data[1]
-                x_seg = data[2]
-                y_seg = data[3]
+                x = x.cuda()
+                y = y.cuda()
+                x_seg = x_seg.cuda()
+                y_seg = y_seg.cuda()
+
                 x_in = torch.cat((x, y), dim=1)
-                output = model(x_in)
-                def_out = reg_model([x_seg[:, 0, ...].cuda().float(), output.cuda()])
-                dsc = utils.dice_val(def_out.long(), y_seg[:, 0, ...].long())
-                eval_dsc.update(dsc.item(), x.size(0))
-                print("{}-eval_dsc.avg:{}".format(idx,eval_dsc.avg))
-        best_mse = max(eval_dsc.avg, best_mse)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_mse': best_mse,
-            'optimizer': optimizer.state_dict(),
-        }, save_dir='./experiments/', filename='Dice-{:.3f}.pth.tar'.format(eval_dsc.avg))
-        writer.add_scalar('MSE/validate', eval_dsc.avg, epoch)
-        MSE_val_Dice.append(eval_dsc.avg)
-        mse_val_dice = np.array(MSE_val_Dice)
-        np.save('registration_experiments/bs_{}_MSE_Dice_epoch_{}'.format(batch_size, epoch + 1), mse_val_dice)
+                deformation_field = model(x_in)
+                
+                moving_seg = x_seg[:, 0, ...].float()
+                fixed_seg = y_seg[:, 0, ...].long()
+
+                def_out = reg_model([moving_seg, deformation_field])
+
+                dsc_per_class = utils.dice_val_per_class(def_out.long(), fixed_seg)
+                validation_dsc_vals.append(dsc_per_class.cpu().numpy())
+                warped_output = reg_model([x, deformation_field])
+                sim_loss = mse_loss(warped_output, y)
+                tot_sim_loss += sim_loss.item()
+                flow_loss = grad_loss(deformation_field, None)
+                tot_grad_loss += flow_loss.item()
+                validation_grad_loss_vals.append(flow_loss.item())
+                validation_mse_loss_vals.append(sim_loss.item())
+                validation_weighted_grad_loss_vals.append(flow_loss.item() * reg_weight)
+            writer.add_scalar('Loss/validate', tot_sim_loss + tot_grad_loss * reg_weight, epoch)
+            writer.add_scalar('Sim_Loss/validate', tot_sim_loss, epoch)
+            writer.add_scalar('Flow_Loss/validate', tot_grad_loss, epoch)
+            print(f"Epoch [{epoch+1}/{max_epoch}] - Validation Loss: {tot_sim_loss + tot_grad_loss * reg_weight:.4f} - Sim Loss: {tot_sim_loss:.4f} - Flow Loss: {tot_grad_loss:.4f}")
+            np.savez(f'{save_loss_dir}/validation_loss_epoch_{epoch+1}.npz',
+                     validation_mse_loss=np.array(validation_mse_loss_vals),
+                        validation_grad_loss=np.array(validation_grad_loss_vals),
+                        validation_weighted_grad_loss=np.array(validation_weighted_grad_loss_vals),
+                        validation_dsc=np.array(validation_dsc_vals))
+            
+                
+        if (dsc_per_class.mean().item() >= best_mse):
+            best_mse = dsc_per_class.mean().item()
+            print('New Best MSE: {:.4f} at epoch {}'.format(best_mse, epoch+1))
+
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_mse': best_mse,
+                'optimizer': optimizer.state_dict(),
+            }, save_dir='./checkpoints/', filename='Dice-{:.3f}.pth.tar'.format(dsc_per_class.mean().item()))
+        
         plt.switch_backend('agg')
         pred_fig = comput_fig(def_out.unsqueeze(0))
 
@@ -255,7 +292,6 @@ def main():
         plt.close(tar_fig)
         writer.add_figure('prediction', pred_fig, epoch)
         plt.close(pred_fig)
-        loss_all.reset()
     writer.close()
 
 # img = img.detach().cpu().numpy()[0, 0, :, 32, :, :]
@@ -303,5 +339,5 @@ def save_checkpoint(state, save_dir='models', filename='Best_Trans_Reg.pth.tar',
 
 if __name__ == '__main__':
     os.makedirs('./experiments/', exist_ok=True)
-    os.makedirs('./registration_experiments/', exist_ok=True)
+    os.makedirs('./checkpoints/', exist_ok=True)
     main()

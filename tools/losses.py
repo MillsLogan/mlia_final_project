@@ -186,7 +186,6 @@ class Grad3d(torch.nn.Module):
         self.loss_mult = loss_mult
 
     def forward(self, y_pred, y_true):
-        y_pred = y_pred.unsqueeze(0)
         dy = torch.abs(y_pred[:, :, 1:, :, :] - y_pred[:, :, :-1, :, :])
         dx = torch.abs(y_pred[:, :, :, 1:, :] - y_pred[:, :, :, :-1, :])
         dz = torch.abs(y_pred[:, :, :, :, 1:] - y_pred[:, :, :, :, :-1])

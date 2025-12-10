@@ -142,7 +142,11 @@ def HD(x,y):
     
 #     return value.max(1)[0]
 
-
+def dice_val_per_class(y_pred, y_true):
+    intersection = (y_pred * y_true).sum(dim=[2, 3, 4])
+    union = y_pred.sum(dim=[2, 3, 4]) + y_true.sum(dim=[2,3,4])
+    dsc = (2. * intersection) / (union + 1e-5)
+    return torch.mean(dsc, dim=0)
 
 def dice_val(y_pred, y_true):
     # y_pred = nn.functional.one_hot(y_pred, num_classes=num_clus)

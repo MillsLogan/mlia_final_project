@@ -213,3 +213,4 @@ npdata/*
 experiments/*
 MAE_TransRNet_log/*
 registration_experiments/*
+checkpoints/*
