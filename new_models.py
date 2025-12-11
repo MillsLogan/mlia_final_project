@@ -293,17 +293,14 @@ class MAETransformer(nn.Module):
                  img_size: tuple[int, int, int]=(64, 128, 128),
                  masking_ratio: float=0.75,
                  patch_size: int=16,
-                 in_channels: int=2, # Two for registration
-                 out_channels: int=3, # Three for 3D flow
                  dropout: float=0.1):
         super().__init__()
         
         self.masking_ratio = masking_ratio
         self.patch_size = patch_size
         self.num_patches = (img_size[0] // patch_size) * (img_size[1] // patch_size) * (img_size[2] // patch_size)
-        self.patch_dim_in = patch_size * patch_size * patch_size * in_channels
-        self.patch_dim_out = patch_size * patch_size * patch_size * out_channels
-        self.out_channels = out_channels
+        self.patch_dim_in = patch_size * patch_size * patch_size
+        self.patch_dim_out = patch_size * patch_size * patch_size
         # Gets the patch position embeddings
         self.patch_position_embeddings = nn.Parameter(torch.randn(1, self.num_patches, encoder_dim))
 
@@ -321,7 +318,7 @@ class MAETransformer(nn.Module):
 
         self.mask_token = nn.Parameter(torch.randn(1, 1, decoder_dim))
         self.decoder_pos_embeddings = nn.Embedding(self.num_patches, decoder_dim)
-        # self.to_pixels = nn.Linear(decoder_dim, self.patch_dim_out)
+        self.to_pixels = nn.Linear(decoder_dim, self.patch_dim_out)
 
         self.decoder = VisionTransformer(decoder_dim,
                                          dec_num_layers,
@@ -329,18 +326,7 @@ class MAETransformer(nn.Module):
                                          mlp_dim=decoder_dim * 4)
 
         self.dropout = nn.Dropout(dropout)
-        self.conv3d_transpose = nn.ConvTranspose3d(
-            decoder_dim,
-            out_channels=16,
-            kernel_size=4,
-            stride=4,
-        )
-        self.conv3d_transpose_1 = nn.ConvTranspose3d(
-            16,
-            out_channels=out_channels,
-            kernel_size=4,
-            stride=4,
-        )
+        
 
     def random_masking(self, n_patches, device):
         len_keep = int(n_patches * (1 - self.masking_ratio))
@@ -402,8 +388,16 @@ class MAETransformer(nn.Module):
             int(x.size(4) / self.patch_size),
         )  # (B, C, D', H', W')
         # Step 4: Reconstruct the pixels
-        reconstructed_patches = self.conv3d_transpose(x_patch_recon)  # (B, N, patch_dim)
-        reconstructed_patches = self.conv3d_transpose_1(reconstructed_patches)
+        reconstructed_patches = self.to_pixels(decoded_tokens)  # (B, N, patch_dim)
+        reconstructed_patches = rearrange(reconstructed_patches, 'b (x y z) (p1 p2 p3 c) -> b c (x p1) (y p2) (z p3)',
+                                          p1=self.patch_size,
+                                          p2=self.patch_size,
+                                          p3=self.patch_size,
+                                          x=int(x.size(2) / self.patch_size),
+                                          y=int(x.size(3) / self.patch_size),
+                                          z=int(x.size(4) / self.patch_size),
+                                          c=1
+                                          )
         # Step 5: Reassemble the patches into images
         targets = patches
         pred_masked = reconstructed_patches[:, masked_indices, :]

@@ -44,6 +44,19 @@ class AverageMeter(object):
 def MSE_torch(x, y):
     return torch.mean((x - y) ** 2)
 
+class CNN(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv3d(in_channels, 16, kernel_size=3, padding=1, stride=1),
+            nn.GELU(),
+            nn.Conv3d(16, out_channels, kernel_size=3, padding=1, stride=1),
+        )
+
+    def forward(self, x):
+        x = self.cnn(x)
+        return x
+
 class RegistrationNet(torch.nn.Module):
     def __init__(self, 
                 img_size=(64,128,128),
@@ -70,16 +83,14 @@ class RegistrationNet(torch.nn.Module):
             dec_num_heads=dec_num_heads,
             enc_num_layers=enc_num_layers,
             enc_num_heads=enc_num_heads,
-            in_channels=in_channels,
-            out_channels=out_channels
         )
-        # self.cnn_encoder = CNN(in_channels=in_channels, out_channels=1)
-        # self.cnn_decoder = CNN(in_channels=1, out_channels=out_channels) # Map to 3 channels for the deformation field
+        self.cnn_encoder = CNN(in_channels=in_channels, out_channels=1)
+        self.cnn_decoder = CNN(in_channels=1, out_channels=out_channels) # Map to 3 channels for the deformation field
 
     def forward(self, x, masked_loss=False):
-        # x = self.cnn_encoder(x) # Map 2 channels to 1 channel
+        x = self.cnn_encoder(x) # Map 2 channels to 1 channel
         output, _ = self.MAE(x, masked_loss)
-        # output = self.cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+        output = self.cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
         return output
 
 def main():
