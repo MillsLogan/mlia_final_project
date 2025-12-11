@@ -85,7 +85,10 @@ class RegistrationNet(torch.nn.Module):
 def main():
     logdir = './experiments/'
     save_loss_dir = './experiments/losses/'
+    checkpoint_dir = './checkpoints/'
     os.makedirs(save_loss_dir, exist_ok=True)
+    os.makedirs(logdir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     batch_size = 2
     train_dir = './npdata/training'
     val_dir = './npdata/validation'
@@ -234,7 +237,7 @@ def main():
                 moving_seg = x_seg[:, 0, ...].float()
                 fixed_seg = y_seg[:, 0, ...].long()
 
-                def_out = reg_model_bilin_train([moving_seg, deformation_field])
+                def_out = reg_model_val([moving_seg, deformation_field])
 
                 dsc_per_class = utils.dice_val_per_class(def_out.long(), fixed_seg)
                 validation_dsc_vals.append(dsc_per_class.cpu().numpy())
@@ -266,7 +269,7 @@ def main():
                 'state_dict': model.state_dict(),
                 'best_mse': best_mse,
                 'optimizer': optimizer.state_dict(),
-            }, save_dir='./checkpoints/', filename='Dice-{:.3f}.pth.tar'.format(dsc_per_class.mean().item()))
+            }, save_dir=checkpoint_dir, filename='Dice-{:.3f}.pth.tar'.format(dsc_per_class.mean().item()))
         
         plt.switch_backend('agg')
         pred_fig = comput_fig(def_out.unsqueeze(0))
@@ -325,6 +328,4 @@ def save_checkpoint(state, save_dir='models', filename='Best_Trans_Reg.pth.tar',
         model_lists = natsorted(glob.glob(save_dir + '*'))
 
 if __name__ == '__main__':
-    os.makedirs('./experiments/', exist_ok=True)
-    os.makedirs('./checkpoints/', exist_ok=True)
     main()

@@ -86,7 +86,7 @@ class SpatialTransformer(nn.Module):
         # new locations
         new_locs = self.grid + flow
         shape = flow.shape[2:]
-
+        
         # need to normalize grid values to [-1, 1] for resampler
         for i in range(len(shape)):
             new_locs[:, i, ...] = 2 * (new_locs[:, i, ...] / (shape[i] - 1) - 0.5)
