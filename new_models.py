@@ -293,20 +293,23 @@ class MAETransformer(nn.Module):
                  img_size: tuple[int, int, int]=(64, 128, 128),
                  masking_ratio: float=0.75,
                  patch_size: int=16,
+                 in_channels: int=2, # Two for registration
+                 out_channels: int=3, # Three for 3D flow
                  dropout: float=0.1):
         super().__init__()
         
         self.masking_ratio = masking_ratio
         self.patch_size = patch_size
         self.num_patches = (img_size[0] // patch_size) * (img_size[1] // patch_size) * (img_size[2] // patch_size)
-        self.patch_dim = patch_size * patch_size * patch_size
-
+        self.patch_dim_in = patch_size * patch_size * patch_size * in_channels
+        self.patch_dim_out = patch_size * patch_size * patch_size * out_channels
+        self.out_channels = out_channels
         # Gets the patch position embeddings
         self.patch_position_embeddings = nn.Parameter(torch.randn(1, self.num_patches, encoder_dim))
 
         self.to_patches = Rearrange('b c (x p1) (y p2) (z p3) -> b (x y z) (p1 p2 p3 c)',
                                     p1=patch_size, p2=patch_size, p3=patch_size)
-        self.patch_to_encoder = nn.Linear(self.patch_dim, encoder_dim)
+        self.patch_to_encoder = nn.Linear(self.patch_dim_in, encoder_dim)
         self.encoder = Encoder(
             dim=encoder_dim,
             mlp_dim=mlp_dim,
@@ -318,7 +321,7 @@ class MAETransformer(nn.Module):
 
         self.mask_token = nn.Parameter(torch.randn(1, 1, decoder_dim))
         self.decoder_pos_embeddings = nn.Embedding(self.num_patches, decoder_dim)
-        self.to_pixels = nn.Linear(decoder_dim, self.patch_dim)
+        # self.to_pixels = nn.Linear(decoder_dim, self.patch_dim_out)
 
         self.decoder = VisionTransformer(decoder_dim,
                                          dec_num_layers,
@@ -326,6 +329,18 @@ class MAETransformer(nn.Module):
                                          mlp_dim=decoder_dim * 4)
 
         self.dropout = nn.Dropout(dropout)
+        self.conv3d_transpose = nn.ConvTranspose3d(
+            decoder_dim,
+            out_channels=16,
+            kernel_size=4,
+            stride=4,
+        )
+        self.conv3d_transpose_1 = nn.ConvTranspose3d(
+            16,
+            out_channels=out_channels,
+            kernel_size=4,
+            stride=4,
+        )
 
     def random_masking(self, n_patches, device):
         len_keep = int(n_patches * (1 - self.masking_ratio))
@@ -352,45 +367,50 @@ class MAETransformer(nn.Module):
         tokens = self.patch_to_encoder(patches) # (B, N, encoder_dim)
 
         tokens += self.patch_position_embeddings[:, :n_patches, :]
-        
-        unmasked_indices, masked_indices = self.random_masking(n_patches, device)
+        if self.masking_ratio > 0:
+            unmasked_indices, masked_indices = self.random_masking(n_patches, device)
 
-        x_masked = tokens[:, masked_indices, :]
-        x_unmasked = tokens[:, unmasked_indices, :]
-
+            x_masked = tokens[:, masked_indices, :]
+            x_unmasked = tokens[:, unmasked_indices, :]
+        else:
+            x_unmasked = tokens
+            unmasked_indices = torch.arange(n_patches, device=device)
+            masked_indices = torch.tensor([], device=device, dtype=torch.long)
         # Step 2: Encode the unmasked patches
         encoded_tokens, _ = self.encoder(x_unmasked)
 
         # Step 3: Prepare decoder input
         decoder_tokens = self.enc_to_dec(encoded_tokens)
-        len_keep = decoder_tokens.shape[1]
-        len_mask = n_patches - len_keep
-        mask_tokens = self.mask_token.repeat(batch, len_mask, 1)
-        decoder_tokens_ = torch.zeros(batch, n_patches, decoder_tokens.size(-1), device=device)
-        decoder_tokens_[:, unmasked_indices, :] = decoder_tokens
-        decoder_tokens_[:, masked_indices, :] = mask_tokens
-        decoder_tokens_[:, masked_indices, :] += self.decoder_pos_embeddings(masked_indices)
-        decoder_tokens_[:, unmasked_indices, :] += self.decoder_pos_embeddings(unmasked_indices)
+        if self.masking_ratio > 0:
+            len_keep = decoder_tokens.shape[1]
+            len_mask = n_patches - len_keep
+            mask_tokens = self.mask_token.repeat(batch, len_mask, 1)
+            decoder_tokens_ = torch.zeros(batch, n_patches, decoder_tokens.size(-1), device=device)
+            decoder_tokens_[:, unmasked_indices, :] = decoder_tokens
+            decoder_tokens_[:, masked_indices, :] = mask_tokens
+            decoder_tokens_[:, masked_indices, :] += self.decoder_pos_embeddings(masked_indices)
+            decoder_tokens_[:, unmasked_indices, :] += self.decoder_pos_embeddings(unmasked_indices)
+        else:
+            decoder_tokens_ = decoder_tokens + self.decoder_pos_embeddings(
+                torch.arange(n_patches, device=device)
+            )
         decoded_tokens = self.decoder(decoder_tokens_)
+        B, N, C = decoded_tokens.shape
+        x_patch_recon = decoded_tokens.permute(0, 2, 1).reshape(B, C, 
+                                                                int(x.size(2) / self.patch_size),
+            int(x.size(3) / self.patch_size),
+            int(x.size(4) / self.patch_size),
+        )  # (B, C, D', H', W')
         # Step 4: Reconstruct the pixels
-        reconstructed_patches = self.to_pixels(decoded_tokens)  # (B, N, patch_dim)
+        reconstructed_patches = self.conv3d_transpose(x_patch_recon)  # (B, N, patch_dim)
+        reconstructed_patches = self.conv3d_transpose_1(reconstructed_patches)
         # Step 5: Reassemble the patches into images
         targets = patches
         pred_masked = reconstructed_patches[:, masked_indices, :]
         targets_masked = targets[:, masked_indices, :]
-        reconstructed_images = rearrange(
-            reconstructed_patches,
-            'b (x y z) (p1 p2 p3 c) -> b c (x p1) (y p2) (z p3)',
-            x=x.size(2) // self.patch_size,
-            y=x.size(3) // self.patch_size,
-            z=x.size(4) // self.patch_size,
-            p1=self.patch_size,
-            p2=self.patch_size,
-            p3=self.patch_size,
-            c=1
-        )
-        if masked_loss:
-            loss = F.mse_loss(pred_masked, targets_masked)
-            return reconstructed_images, loss
         
-        return reconstructed_images, None
+        if masked_loss and self.masking_ratio > 0:
+            loss = F.mse_loss(pred_masked, targets_masked)
+            return reconstructed_patches, loss
+        
+        return reconstructed_patches, None

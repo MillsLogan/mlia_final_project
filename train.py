@@ -44,31 +44,13 @@ class AverageMeter(object):
 def MSE_torch(x, y):
     return torch.mean((x - y) ** 2)
 
-
-class CNN(torch.nn.Module):
-    """
-    Added to map the input image to the required encoder dimension
-    """
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv1 = torch.nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
-        # Maintain spatial dimensions
-        self.norm1 = torch.nn.InstanceNorm3d(out_channels)
-        self.act1 = torch.nn.GELU()
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.norm1(x)
-        x = self.act1(x)
-        return x
-
 class RegistrationNet(torch.nn.Module):
     def __init__(self, 
                 img_size=(64,128,128),
                 patch_size=16,
                 encoder_dim=768,
                 mlp_dim=3072,
-                masking_ratio = 0.75,   # the paper recommended 75% masked patches
+                masking_ratio = 0.,   # the paper recommended 75% masked patches
                 decoder_dim = 512,      # paper showed good results with just 512
                 dec_num_layers = 6,       # anywhere from 1 to 8
                 dec_num_heads=4,
@@ -87,38 +69,40 @@ class RegistrationNet(torch.nn.Module):
             dec_num_layers = dec_num_layers,
             dec_num_heads=dec_num_heads,
             enc_num_layers=enc_num_layers,
-            enc_num_heads=enc_num_heads
+            enc_num_heads=enc_num_heads,
+            in_channels=in_channels,
+            out_channels=out_channels
         )
-        self.cnn_encoder = CNN(in_channels=in_channels, out_channels=1)
-        self.cnn_decoder = CNN(in_channels=1, out_channels=out_channels) # Map to 3 channels for the deformation field
+        # self.cnn_encoder = CNN(in_channels=in_channels, out_channels=1)
+        # self.cnn_decoder = CNN(in_channels=1, out_channels=out_channels) # Map to 3 channels for the deformation field
 
-    def forward(self, x, masked_loss=True):
-        x = self.cnn_encoder(x) # Map 2 channels to 1 channel
+    def forward(self, x, masked_loss=False):
+        # x = self.cnn_encoder(x) # Map 2 channels to 1 channel
         output, _ = self.MAE(x, masked_loss)
-        output = self.cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+        # output = self.cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
         return output
 
 def main():
     logdir = './experiments/'
     save_loss_dir = './experiments/losses/'
     os.makedirs(save_loss_dir, exist_ok=True)
-    batch_size = 1
+    batch_size = 2
     train_dir = './npdata/training'
     val_dir = './npdata/validation'
-    lr = 1e-4
+    lr = 5e-4
     reg_weight = 0.01 # Weight for flow loss
     epoch_start = 0
     max_epoch = 500
-    reg_model = utils.register_model((64,128,128), 'nearest')
-    reg_model.cuda()
-    reg_model_bilin = utils.register_model((64,128,128), 'bilinear')
-    reg_model_bilin.cuda()
+    reg_model_val = utils.register_model((64,128,128), 'nearest')
+    reg_model_val.cuda()
+    reg_model_bilin_train = utils.register_model((64,128,128), 'bilinear')
+    reg_model_bilin_train.cuda()
     model = RegistrationNet(
         img_size=(64,128,128),
         patch_size=16,
         encoder_dim=768,
         mlp_dim=3072,
-        masking_ratio = 0.75,   # the paper recommended 75% masked patches
+        masking_ratio = 0.,   # the paper recommended 75% masked patches
         decoder_dim = 512,      # paper showed good results with just 512
         dec_num_layers = 6,       # anywhere from 1 to 8
         dec_num_heads=4,
@@ -205,7 +189,7 @@ def main():
             y = y.cuda()
             x_in = torch.cat((x,y), dim=1)
             deformation_field = model(x_in)
-            warped_output = reg_model([x, deformation_field])
+            warped_output = reg_model_bilin_train([x, deformation_field])
             sim_loss = mse_loss(warped_output, y)
             tot_sim_loss += sim_loss.item()
             flow_loss = grad_loss(deformation_field, None)
@@ -213,7 +197,10 @@ def main():
             training_grad_loss_vals.append(flow_loss.item())
             training_mse_loss_vals.append(sim_loss.item())
             training_weighted_grad_loss_vals.append(flow_loss.item() * reg_weight)
-            loss = sim_loss + flow_loss * reg_weight
+            if epoch > max_epoch // 2:
+                loss = sim_loss + flow_loss * reg_weight
+            else:
+                loss = sim_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -247,11 +234,11 @@ def main():
                 moving_seg = x_seg[:, 0, ...].float()
                 fixed_seg = y_seg[:, 0, ...].long()
 
-                def_out = reg_model([moving_seg, deformation_field])
+                def_out = reg_model_bilin_train([moving_seg, deformation_field])
 
                 dsc_per_class = utils.dice_val_per_class(def_out.long(), fixed_seg)
                 validation_dsc_vals.append(dsc_per_class.cpu().numpy())
-                warped_output = reg_model([x, deformation_field])
+                warped_output = reg_model_bilin_train([x, deformation_field])
                 sim_loss = mse_loss(warped_output, y)
                 tot_sim_loss += sim_loss.item()
                 flow_loss = grad_loss(deformation_field, None)
