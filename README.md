@@ -1,3 +1,24 @@
+# Running
+To run the model please use the provided `alt-requirements.txt` with `Python3.10`.
+
+
+If the npdata directory is not provided, download the ACDC dataset and run the `move_val_set.py` script to move the validation images to a new folder. Then run the `preprocess.py` file to create the required numpy files.
+
+
+To pretrain a model use `custom_pretrain.py` and uncomment the corresponding model at the bottom of the file you'd like to train.
+
+
+To train a registration model, use `train.py` and specify if you'd like to load the pretraining weights or not.
+
+
+To test a model use the provided `test.py` commneting/uncommenting the provided utilities to reproduce the results presented in the paper.
+
+
+
+
+
+
+
 # MAE-TransRNet
 Transformer-ConvNet with Masked AutoEncoder for Cardiac Image Registration
 ## Overview
