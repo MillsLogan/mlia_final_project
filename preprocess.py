@@ -70,13 +70,12 @@ def get_training_transform_pipeline() -> Compose:
                 b_max=1.0,
                 clip=True
             ),
+            Lambda(func=reorder),
             # Crops the foreground of the image, trimming out black space to reduce memory
             CropForegroundd(keys=["image"], source_key="image"),
             # Checks if the image is at least 64x128x128, if not pads with zeros
             SpatialPadd(keys=["image"], spatial_size=(64,128,128)),
             # Randomly extracts 2 samples of size 64x128x128 from the volume
-            Lambda(func=reorder),
-            CropForegroundd(keys=["image"], source_key="image"),
             Resized(
                 keys=["image"], 
                 spatial_size=(64, 128, 128), 

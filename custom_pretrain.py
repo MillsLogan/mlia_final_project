@@ -326,15 +326,15 @@ def train_model_with_full_mse_error(
 
 
 def main():
-    # Load dataset
-    # train_ds, val_ds = load_dataset()
-
     # Base model from paper
     # Patch size: 16
     # Encdoer dim: 768
     # MLP dim: 3072
     # ViT layers: 12 - encoder depth
     # ViT head: 12 - encoder heads
+
+
+    # BASE MODEL
     model = MAETransformer(
         img_size=(64,128,128),
         patch_size=16,
@@ -352,6 +352,36 @@ def main():
     # The paper mentions 63.837M parameters for the base model
     # I'm assuming they meant the encoder only, but there is still a discrepancy of ~2.3M parameters
     
+    # LARGE MODEL
+    # model = MAETransformer(
+    #     img_size=(64,128,128),
+    #     patch_size=16,
+    #     encoder_dim=1024,
+    #     mlp_dim=4096,
+    #     masking_ratio = 0.75,   # the paper recommended 75% masked patches
+    #     decoder_dim = 512,      # paper showed good results with just 512
+    #     dec_num_layers = 6,       # anywhere from 1 to 8
+    #     dec_num_heads=4,
+    #     enc_num_layers=24,
+    #     enc_num_heads=16
+    # )
+
+    # # HUGE MODEL
+    # model = MAETransformer(
+    #     img_size=(64,128,128),
+    #     patch_size=16,
+    #     encoder_dim=1280,
+    #     mlp_dim=5120,
+    #     masking_ratio = 0.75,   # the paper recommended 75% masked patches
+    #     decoder_dim = 512,      # paper showed good results with just 512
+    #     dec_num_layers = 6,       # anywhere from 1 to 8
+    #     dec_num_heads=4,
+    #     enc_num_layers=32,
+    #     enc_num_heads=16
+    # )
+
+
+
     # Training parameters
     max_epochs = 500 # From paper
     val_interval = 1 # From code, after how many epochs to validate
@@ -359,29 +389,16 @@ def main():
     lr = 1e-4 # From paper
     workers = 0 # From code, number of workers for data loading
     
-    # From code, not mentioned in paper, except in Figure 12
-    # contrastive_loss = ContrastiveLoss(temperature=0.05)
-
     # Paper does mention using Adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Train Dataset and DataLoader
     train_dataset = PretrainDataset(file_path="./npdata/training", transforms=lambda x: x)
     val_dataset = PretrainDataset(file_path="./npdata/validation", transforms=lambda x: x)
-    # train_dataset = monaiDataset(data=train_ds, transform=training_transforms)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     # Validation Dataset and DataLoader
-    # val_dataset = monaiDataset(data=val_ds, transform=training_transforms)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=workers)
-    # train_model_with_masked_error(
-    #     model=model,
-    #     train_loader=train_loader,
-    #     val_loader=val_loader,
-    #     optimizer=optimizer,
-    #     max_epochs=max_epochs,
-    #     val_interval=val_interval
-    # )
 
     train_model_with_full_mse_error(
         model=model,

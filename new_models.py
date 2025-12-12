@@ -389,7 +389,7 @@ class MAETransformer(nn.Module):
         )  # (B, C, D', H', W')
         # Step 4: Reconstruct the pixels
         reconstructed_patches = self.to_pixels(decoded_tokens)  # (B, N, patch_dim)
-        reconstructed_patches = rearrange(reconstructed_patches, 'b (x y z) (p1 p2 p3 c) -> b c (x p1) (y p2) (z p3)',
+        reconstructed_image = rearrange(reconstructed_patches, 'b (x y z) (p1 p2 p3 c) -> b c (x p1) (y p2) (z p3)',
                                           p1=self.patch_size,
                                           p2=self.patch_size,
                                           p3=self.patch_size,
@@ -405,6 +405,6 @@ class MAETransformer(nn.Module):
         
         if masked_loss and self.masking_ratio > 0:
             loss = F.mse_loss(pred_masked, targets_masked)
-            return reconstructed_patches, loss
+            return reconstructed_image, loss
         
-        return reconstructed_patches, None
+        return reconstructed_image, None

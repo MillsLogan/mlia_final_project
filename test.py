@@ -2,20 +2,26 @@ import matplotlib.pyplot as plt
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, Spacingd, 
     ScaleIntensityRanged, CropForegroundd, SpatialPadd, 
-    RandSpatialCropSamplesd, Resized, Lambda
+    RandSpatialCropSamplesd, Resized, Lambda, OneOf, RandCoarseDropoutd
 )
 import numpy as np
-
-from tools import utils
+import torch
+import tools.utils as utils
 from train import RegistrationNet
+from new_models import MAETransformer
+from torchvision import transforms
+from data_pre import datasets, trans
+import SimpleITK as sitk
+
+
+
 def reorder(data):
     data["image"] = np.transpose(data["image"], (0, 3, 2, 1))
     return data
 load_pipeline = Compose([
     LoadImaged(keys=["image"], reader="ITKReader")
 ])
-# 1. The Original Pipeline (Cropping)
-# ---------------------------------------------------------
+
 crop_pipeline = Compose([
     LoadImaged(keys=["image"], reader="ITKReader"),
     EnsureChannelFirstd(keys=["image"]),
@@ -24,15 +30,20 @@ crop_pipeline = Compose([
         keys=["image"], a_min=-57, a_max=164, 
         b_min=0.0, b_max=1.0, clip=True
     ),
-    Lambda(func=reorder),
+    # Lambda(func=reorder),
     CropForegroundd(keys=["image"], source_key="image"),
     SpatialPadd(keys=["image"], spatial_size=(64,128,128)),
     # Returns a LIST of dictionaries (num_samples=2)
-    RandSpatialCropSamplesd(keys=["image"], roi_size=(64,128,128), random_size=False, num_samples=1), 
+    RandSpatialCropSamplesd(keys=["image"], roi_size=(64,128,128), random_size=False, num_samples=1),
+    OneOf(transforms=[
+            RandCoarseDropoutd(keys=["image"], prob=1.0, holes=6, spatial_size=5, dropout_holes=True,
+                               max_spatial_size=32),
+            RandCoarseDropoutd(keys=["image"], prob=1.0, holes=6, spatial_size=20, dropout_holes=False,
+                               max_spatial_size=64),
+            ]
+        ),
 ])
 
-# 2. The New Pipeline (Zoom to Fit / Resizing)
-# ---------------------------------------------------------
 zoom_pipeline = Compose([
     LoadImaged(keys=["image"], reader="ITKReader"),
     EnsureChannelFirstd(keys=["image"]),
@@ -52,17 +63,11 @@ zoom_pipeline = Compose([
     )
 ])
 
-# 3. Helper function to plot
-# ---------------------------------------------------------
-import matplotlib.pyplot as plt
-import numpy as np
-from monai.transforms import LoadImage
-import SimpleITK as sitk
+
 
 def visualize_three_way(image_path):
-    raw_image = load_pipeline({"image": image_path})["image"]
+    # raw_image = load_pipeline({"image": image_path})["image"]
     
-    # 2. Run the Pipelines (Reusing your previous pipeline definitions)
     data = {"image": image_path}
     
     # Run Crop Pipeline
@@ -71,8 +76,6 @@ def visualize_three_way(image_path):
     # Run Zoom Pipeline
     zoom_result = zoom_pipeline(data)["image"]
 
-    # 3. Convert to Numpy and strip Channel dimension
-    # Result shapes should be (Depth, Height, Width)
     vol_raw = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
     vol_crop = sitk.GetArrayFromImage(sitk.GetImageFromArray(crop_result[0].numpy()))
     vol_zoom = sitk.GetArrayFromImage(sitk.GetImageFromArray(zoom_result[0].numpy()))
@@ -93,191 +96,271 @@ def visualize_three_way(image_path):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
     # Plot Raw
-    axes[0].set_title(f"Original Unaltered\nShape: {vol_raw.shape}\nSlice: {slice_idx_raw}")
-    # We do not specify vmin/vmax here to let matplotlib auto-scale the raw intensities
+    axes[0].set_title(f"Original Unaltered")
     axes[0].imshow(img_raw, cmap="gray")
     axes[0].axis("off")
 
     # Plot Cropped
-    axes[1].set_title(f"Cropped (MONAI)\nShape: {vol_crop.shape}\nSlice: {slice_idx_crop}")
+    axes[1].set_title(f"Original Preprocessing Pipeline")
     axes[1].imshow(img_crop, cmap="gray", vmin=0, vmax=1) # Scaled 0-1
     axes[1].axis("off")
 
     # Plot Zoomed
-    axes[2].set_title(f"Zoomed (Resized)\nShape: {vol_zoom.shape}\nSlice: {slice_idx_zoom}")
+    axes[2].set_title(f"Our Preprocessing Pipeline (Zoom to Fit)")
     axes[2].imshow(img_zoom, cmap="gray", vmin=0, vmax=1) # Scaled 0-1
     axes[2].axis("off")
 
     plt.tight_layout()
+    plt.savefig("preprocessing_comparison.png")
     plt.show()
 
-
-import matplotlib.pyplot as plt
-import numpy as np
-
-def visualize_deformation_with_seg(seg_tensor, flow_tensor, slice_idx=None, axis=1, stride=4):
-    """
-    seg_tensor:  (4, 64, 128, 128) - One-hot encoded segmentation
-    flow_tensor: (3, 64, 128, 128) - Deformation field (Z, Y, X displacements usually)
-    slice_idx:   The index of the slice to view. If None, picks the middle.
-    axis:        The axis to slice along (0=Depth/64, 1=Height/128, 2=Width/128). 
-                 Note: Since your data is (C, D, H, W), axis 0 refers to D.
-    stride:      Skip every Nth arrow to prevent clutter.
-    """
     
-    # --- 1. PREPROCESSING ---
-    
-    # Convert Segmentation from (4, D, H, W) -> (D, H, W) using Argmax
-    # This collapses the 4 channels into a single map with values 0, 1, 2, 3
-    if seg_tensor.shape[0] == 4:
-        seg_mask = np.argmax(seg_tensor, axis=0) 
+def get_final_results(model, save_path: str):
+    reg_model_val = utils.register_model((64,128,128), 'nearest')
+    test_composed = transforms.Compose([trans.Seg_norm(), #rearrange segmentation label to 4 class
+                                        trans.NumpyType((np.float32, np.int16)),
+                                            ])
+    test_dataset = datasets.CardiacInferDataset('./npdata/testing', transforms=test_composed)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
+    x_flow_values = []
+    y_flow_values = []
+    z_flow_values = []
+    seg_2_dice_values = []
+    seg_3_dice_values = []
+    seg_4_dice_values = []
+    seg_2_hd_values = []
+    seg_3_hd_values = []
+    seg_4_hd_values = []
+    model = model.cuda()
+    for x, y, x_seg, y_seg in test_loader:
+        x = x.cuda()
+        y = y.cuda()
+        x_seg = x_seg.cuda()
+        y_seg = y_seg.cuda()
+        x_seg2 = x_seg[:, :, 1, ...]
+        x_seg3 = x_seg[:, :, 2, ...]
+        x_seg4 = x_seg[:, :, 3, ...]
+        y_seg2 = y_seg[:, :, 1, ...]
+        y_seg3 = y_seg[:, :, 2, ...]
+        y_seg4 = y_seg[:, :, 3, ...]
+        inputs = torch.cat((x, y), dim=1)
+        deformation = model(inputs)
+        x_flow_values.append(deformation[0, 0, ...].detach().cpu().numpy())
+        y_flow_values.append(deformation[0, 1, ...].detach().cpu().numpy())
+        z_flow_values.append(deformation[0, 2, ...].detach().cpu().numpy())
+
+        deformation_val2 = reg_model_val([x_seg2, deformation])
+        deformation_val3 = reg_model_val([x_seg3, deformation])
+        deformation_val4 = reg_model_val([x_seg4, deformation])
+
+        dice_2 = utils.dice_val(deformation_val2, y_seg2).cpu().detach().numpy()
+        dice_3 = utils.dice_val(deformation_val3, y_seg3).cpu().detach().numpy()
+        dice_4 = utils.dice_val(deformation_val4, y_seg4).cpu().detach().numpy()
+        seg_2_dice_values.append(dice_2)
+        seg_3_dice_values.append(dice_3)
+        seg_4_dice_values.append(dice_4)
+        hd_2 = utils.hd(deformation_val2.detach().cpu().numpy(), y_seg2.detach().cpu().numpy())
+        hd_3 = utils.hd(deformation_val3.detach().cpu().numpy(), y_seg3.detach().cpu().numpy())
+        hd_4 = utils.hd(deformation_val4.detach().cpu().numpy(), y_seg4.detach().cpu().numpy())
+        seg_2_hd_values.append(hd_2)
+        seg_3_hd_values.append(hd_3)
+        seg_4_hd_values.append(hd_4)
+    import pandas as pd
+    df = pd.DataFrame({
+        'x_flow_mag_avg': [np.mean([np.mean(np.abs(f)) for f in x_flow_values])], # Length 1
+        'y_flow_mag_avg': [np.mean([np.mean(np.abs(f)) for f in y_flow_values])], # Length 1
+        'z_flow_mag_avg': [np.mean([np.mean(np.abs(f)) for f in z_flow_values])], # Length 1
+        'x_flow_mag_std': [np.std([np.std(np.abs(f)) for f in x_flow_values])], # Length 1
+        'y_flow_mag_std': [np.std([np.std(np.abs(f)) for f in y_flow_values])], # Length 1
+        'z_flow_mag_std': [np.std([np.std(np.abs(f)) for f in z_flow_values])], # Length 1
+        'seg_2_dice': [np.mean(seg_2_dice_values)], # Length 1
+        'seg_3_dice': [np.mean(seg_3_dice_values)], # Length 1
+        'seg_4_dice': [np.mean(seg_4_dice_values)], # Length 1
+        'dice_avg': [(np.mean(seg_2_dice_values)+np.mean(seg_3_dice_values)+np.mean(seg_4_dice_values))/3], # Length 1
+        'seg_2_hd': [np.mean(seg_2_hd_values)], # Length 1
+        'seg_3_hd': [np.mean(seg_3_hd_values)], # Length 1
+        'seg_4_hd': [np.mean(seg_4_hd_values)], # Length 1
+        'hd_avg': [(np.mean(seg_2_hd_values)+np.mean(seg_3_hd_values)+np.mean(seg_4_hd_values))/3], # Length 1
+    })
+    df.to_csv(save_path, index=False)
+
+def get_large_model(use_pretrained: bool = True):
+    model = RegistrationNet(img_size=(64,128,128), 
+                        in_channels=2, 
+                        out_channels=3, 
+                        enc_num_layers=24, 
+                        enc_num_heads=16, 
+                        encoder_dim=1024, 
+                        mlp_dim=4096, 
+                        dec_num_layers=6, 
+                        dec_num_heads=4, 
+                        decoder_dim=512, 
+                        patch_size=16, 
+                        masking_ratio=0.)
+    if use_pretrained:
+        weights = torch.load("final_models/registration/large_pretrain.pth.tar", weights_only=False)
     else:
-        seg_mask = seg_tensor
+        weights = torch.load("final_models/registration/large_random.pth.tar", weights_only=False)
+    del weights['optimizer']
+    del weights['epoch']
+    del weights['best_mse']
+    model.load_state_dict(weights['state_dict'])
+    return model
 
-    # Convert Flow from (3, D, H, W) -> (D, H, W, 3) 
-    # We move the channel dim to the end for easier slicing
-    flow_permuted = np.moveaxis(flow_tensor, 0, -1)
+def get_huge_model(use_pretrained: bool = True):
+    model = RegistrationNet(img_size=(64,128,128), 
+                        in_channels=2, 
+                        out_channels=3, 
+                        enc_num_layers=32, 
+                        enc_num_heads=16, 
+                        encoder_dim=1280, 
+                        mlp_dim=5120, 
+                        dec_num_layers=6, 
+                        dec_num_heads=4, 
+                        decoder_dim=512, 
+                        patch_size=16, 
+                        masking_ratio=0.)
+    if use_pretrained:
+        weights = torch.load("final_models/registration/huge_pretrain.pth.tar", weights_only=False)
+    else:
+        weights = torch.load("final_models/registration/huge_random.pth.tar", weights_only=False)
+    del weights['optimizer']
+    del weights['epoch']
+    del weights['best_mse']
+    model.load_state_dict(weights['state_dict'])
+    return model
+
+def get_base_model(use_pretrained: bool = True):
+    model = RegistrationNet(img_size=(64,128,128), 
+                        in_channels=2, 
+                        out_channels=3, 
+                        enc_num_layers=12, 
+                        enc_num_heads=12, 
+                        encoder_dim=768, 
+                        mlp_dim=3072, 
+                        dec_num_layers=6, 
+                        dec_num_heads=4, 
+                        decoder_dim=512, 
+                        patch_size=16, 
+                        masking_ratio=0.)
+    if use_pretrained:
+        weights = torch.load("final_models/registration/large_pretrain.pth.tar", weights_only=False)
+    else:
+        weights = torch.load("final_models/registration/large_random.pth.tar", weights_only=False)
+    del weights['optimizer']
+    del weights['epoch']
+    del weights['best_mse']
+    model.load_state_dict(weights['state_dict'])
+    return model
+
+def base_mae_model():
+    model = MAETransformer(img_size=(64,128,128), 
+                        enc_num_layers=12, 
+                        enc_num_heads=12, 
+                        encoder_dim=768, 
+                        mlp_dim=3072, 
+                        dec_num_layers=6, 
+                        dec_num_heads=4, 
+                        decoder_dim=512, 
+                        patch_size=16, 
+                        masking_ratio=0.75)
+    weights = torch.load("final_models/mae/base_mae.pth")
+    model.load_state_dict(weights)
+    return model
+
+def large_mae_model():
+    model = MAETransformer(img_size=(64,128,128), 
+                        enc_num_layers=24, 
+                        enc_num_heads=16, 
+                        encoder_dim=1024, 
+                        mlp_dim=4096, 
+                        dec_num_layers=6, 
+                        dec_num_heads=4, 
+                        decoder_dim=512, 
+                        patch_size=16, 
+                        masking_ratio=0.75)
+    weights = torch.load("final_models/mae/large_mae.pth")
+    model.load_state_dict(weights)
+    return model
+
+def huge_mae_model():
+    model = MAETransformer(img_size=(64,128,128), 
+                        enc_num_layers=32, 
+                        enc_num_heads=16, 
+                        encoder_dim=1280, 
+                        mlp_dim=5120, 
+                        dec_num_layers=6, 
+                        dec_num_heads=4, 
+                        decoder_dim=512, 
+                        patch_size=16, 
+                        masking_ratio=0.75)
+    weights = torch.load("final_models/mae/huge_mae.pth")
+    model.load_state_dict(weights)
+    return model
+
+def reconstruction_results(model, save_path: str, get_image: bool=False):
+    test_composed = transforms.Compose([trans.Seg_norm(), #rearrange segmentation label to 4 class
+                                        trans.NumpyType((np.float32, np.int16)),
+                                            ])
+    test_dataset = datasets.CardiacInferDataset('./npdata/testing', transforms=test_composed)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
+    mse_values = []
+    model = model.cuda()
+    model.eval()
+    for x, y, _, _ in test_loader:
+        x = x.cuda()
+        y = y.cuda()
+        x_out, _ = model(x, False)
+        y_out, _ = model(y, False)
+        mse_values.append(torch.nn.MSELoss()(x_out, x).cpu().detach().numpy())
+        mse_values.append(torch.nn.MSELoss()(y_out, y).cpu().detach().numpy())
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        if get_image:
+            axs[0].imshow(x[0,0,32,:,:].cpu().detach().numpy(), cmap='gray')
+            axs[0].set_title('Original Image Slice')
+            axs[0].axis('off')
+            axs[1].imshow(x_out[0,0,32,:,:].cpu().detach().numpy(), cmap='gray')
+            axs[1].set_title('Reconstructed Image Slice')
+            axs[1].axis('off')
+            plt.tight_layout()
+            plt.savefig(f'{save_path}', dpi=300)
+            plt.close()
+            exit()
+    import pandas as pd
+    df = pd.DataFrame({
+        'reconstruction_mse_avg': [np.mean(mse_values)], # Length 1
+        'reconstruction_mse_std': [np.std(mse_values)], # Length 1
+    })
+    df.to_csv(save_path, index=False)
+
+if __name__ == "__main__":
+    # MAE Reconstruction Results
+    model = base_mae_model()
+    reconstruction_results(model, "results/base_mae_reconstruction_result.csv", get_image=False)
+    reconstruction_results(model, "results/base_mae_reconstruction_image.png", get_image=True)
+    model = large_mae_model()
+    reconstruction_results(model, "results/large_mae_reconstruction_result.csv", get_image=False)
+    reconstruction_results(model, "results/large_mae_reconstruction_image.png", get_image=True)
+    model = huge_mae_model()
+    reconstruction_results(model, "results/huge_mae_reconstruction_result.csv", get_image=False)
+    reconstruction_results(model, "results/huge_mae_reconstruction_image.png", get_image=True)
     
-    # Handle default slice index (middle of the volume)
-    if slice_idx is None:
-        slice_idx = seg_mask.shape[axis] // 2
-
-    # --- 2. EXTRACT SLICES ---
-    
-    # We need to handle slicing based on which axis (D, H, or W) we are looking at.
-    # We also need to pick the correct 2D flow vectors for that plane.
-    
-    if axis == 0: # Slicing Depth (Viewing the H-W plane) - The most common view
-        seg_slice = seg_mask[slice_idx, :, :]
-        # Flow vector 1 is usually Y (Height), Vector 2 is X (Width)
-        flow_u = flow_permuted[slice_idx, :, :, 2] # X displacement
-        flow_v = flow_permuted[slice_idx, :, :, 1] # Y displacement
-        xlabel, ylabel = "Width", "Height"
-
-    elif axis == 1: # Slicing Height (Viewing the D-W plane)
-        seg_slice = seg_mask[:, slice_idx, :]
-        flow_u = flow_permuted[:, slice_idx, :, 2] # X displacement
-        flow_v = flow_permuted[:, slice_idx, :, 0] # Z displacement
-        xlabel, ylabel = "Width", "Depth"
-        
-    elif axis == 2: # Slicing Width (Viewing the D-H plane)
-        seg_slice = seg_mask[:, :, slice_idx]
-        flow_u = flow_permuted[:, :, slice_idx, 1] # Y displacement
-        flow_v = flow_permuted[:, :, slice_idx, 0] # Z displacement
-        xlabel, ylabel = "Height", "Depth"
-
-    # --- 3. VISUALIZATION ---
-    
-    plt.figure(figsize=(10, 8))
-    
-    # A. Plot Magnitude Heatmap (Optional background)
-    magnitude = np.sqrt(flow_u**2 + flow_v**2)
-    plt.imshow(magnitude, cmap='gray', alpha=0.3, origin='lower')
-    
-    # B. Overlay Segmentation Contours
-    # We assume classes are 0 (Bg), 1 (RV), 2 (Myo), 3 (LV)
-    # We define specific colors for each class
-    colors = ['black', 'red', 'lime', 'blue'] 
-    labels = ['Background', 'RV', 'Myo', 'LV']
-    
-    # Loop through classes 1, 2, 3 to draw contours
-    for i in range(1, 4):
-        # Create a binary mask for the specific class
-        class_mask = (seg_slice == i).astype(float)
-        if np.any(class_mask):
-            plt.contour(class_mask, levels=[0.5], colors=[colors[i]], linewidths=2.5)
-            # Dummy plot for legend
-            plt.plot([], [], color=colors[i], label=labels[i])
-
-    # C. Plot Deformation Vectors (Quiver)
-    # We use meshgrid to define the arrow positions
-    h, w = seg_slice.shape
-    x_grid, y_grid = np.meshgrid(np.arange(w), np.arange(h))
-    
-    # Apply Stride (downsample)
-    plt.quiver(x_grid[::stride, ::stride], 
-               y_grid[::stride, ::stride], 
-               flow_u[::stride, ::stride], 
-               flow_v[::stride, ::stride],
-               color='orange', 
-               angles='xy', scale_units='xy', scale=1, 
-               width=0.002, alpha=0.8, label='Deformation')
-
-    plt.title(f"Deformation Field + Segmentation (Slice {slice_idx} along Axis {axis})")
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.legend(loc='upper right')
-    plt.show()
-
-# --- EXAMPLE USAGE ---
-# Assuming you have your numpy arrays or torch tensors ready:
-# If they are torch tensors, use .cpu().numpy() first.
-
-# Example inputs (Random noise for demonstration)
-# seg_data = np.random.randint(0, 4, size=(4, 64, 128, 128)) # Warning: this is not one-hot, just dummy
-# flow_data = np.random.randn(3, 64, 128, 128) * 2
-
-# visualize_deformation_with_seg(seg_data, flow_data, slice_idx=32, axis=0, stride=5)
-
-# Usage
-# visualize_three_way("path/to/image.nii.gz")
-# ---------------------------------------------------------
-# Usage: Replace with your actual file path
-# visualize_three_way("ACDC/database/training/patient001/patient001_frame01.nii.gz")
-# exit()
-from new_models import MAETransformer
-import torch
-# model = MAETransformer(
-#         img_size=(64,128,128),
-#         patch_size=16,
-#         encoder_dim=768,
-#         mlp_dim=3072,
-#         masking_ratio = 0.75,   # the paper recommended 75% masked patches
-#         decoder_dim = 512,      # paper showed good results with just 512
-#         dec_num_layers = 6,       # anywhere from 1 to 8
-#         dec_num_heads=4,
-#         enc_num_layers=12,
-#         enc_num_heads=12
-#     )
-# weights = torch.load("mae_pretrained_model.pth")
-model = RegistrationNet(img_size=(64,128,128), in_channels=2, enc_num_layers=12, enc_num_heads=12, encoder_dim=768, mlp_dim=3072, dec_num_layers=6, dec_num_heads=4, decoder_dim=512, patch_size=16, masking_ratio=0.75)
-weights = torch.load("Dice-0.598.pth.tar", weights_only=False)
-del weights['optimizer']
-del weights['epoch']
-del weights['best_mse']
-model.load_state_dict(weights['state_dict'])
-img = np.load("npdata/training/patient001.npz")
-frame_1 = img['x'].astype(np.float32)  # Moving
-frame_2 = img['y'].astype(np.float32)  # Fixed
-seg_x = img['xSeg'].astype(np.float32)
-seg_y = img['ySeg'].astype(np.float32)
-
-model.eval()
-raw_image = torch.cat((torch.from_numpy(frame_1).unsqueeze(0).unsqueeze(0), torch.from_numpy(frame_2).unsqueeze(0).unsqueeze(0)), dim=1)
-deformation = model(raw_image)  # Add batch dimension
-# Usage: Plot middle slice
-flow_tensor = deformation.squeeze(0).cpu().detach().numpy()
-print(f"Max Flow: {np.max(flow_tensor)}")
-print(f"Min Flow: {np.min(flow_tensor)}")
-print(f"Mean Flow: {np.mean(np.abs(flow_tensor))}")
-exit()
-visualize_deformation_with_seg(seg_x, deformation.squeeze(0).cpu().detach().numpy(), slice_idx=32, axis=0, stride=4)
-exit()
-reg_model = utils.register_model((64,128,128), 'bilinear')
-output = reg_model([raw_image.unsqueeze(0).cuda().float(), deformation.cuda()])
-reconstruction = output.squeeze(0)
-# Visualize deformed image
-
-reconstruction = torch.squeeze(reconstruction, 0).squeeze(0).cuda()
-fig, axes = plt.subplots(1, 2, figsize=(18, 6))
-raw_image = raw_image.squeeze(0)
-print(torch.nn.functional.mse_loss(reconstruction, raw_image.cuda()))
-# Plot Raw
-axes[0].set_title(f"Original Unaltered\nShape: {raw_image.shape}\nSlice: {32}")
-# We do not specify vmin/vmax here to let matplotlib auto-scale the raw intensities
-axes[0].imshow(raw_image[1, 1, :, :].cpu(), cmap="gray")
-axes[0].axis("off")
-axes[1].imshow(reconstruction[1, :, :].cpu().detach(), cmap="gray")
-axes[1].axis("off")
-plt.tight_layout()
-plt.show()
+    # Registration Results
+    # base_model = get_base_model(use_pretrained=False)
+    # get_final_results(base_model, "results/base_model_results.csv")
+    # del base_model
+    # large_model = get_large_model(use_pretrained=False)
+    # get_final_results(large_model, "results/large_model_results.csv")
+    # del large_model
+    # huge_model = get_huge_model(use_pretrained=False)
+    # get_final_results(huge_model, "results/huge_model_results.csv")
+    # del huge_model
+    # pretrained_base_model = get_base_model(use_pretrained=True)
+    # get_final_results(pretrained_base_model, "results/pretrained_base_model_results.csv")
+    # del pretrained_base_model
+    # pretrained_large_model = get_large_model(use_pretrained=True)
+    # get_final_results(pretrained_large_model, "results/pretrained_large_model_results.csv")
+    # del pretrained_large_model
+    # pretrained_huge_model = get_huge_model(use_pretrained=True)
+    # get_final_results(pretrained_huge_model, "results/pretrained_huge_model_results.csv")
+    # del pretrained_huge_model
