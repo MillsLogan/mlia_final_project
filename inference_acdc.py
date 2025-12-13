@@ -20,7 +20,7 @@ from natsort import natsorted
 import pdb
 import SimpleITK as sitk
 
-result_dir = '/home/xiaoxin/MAE_TransRNet/tmp/pycharm_project_858/vis'
+result_dir = './results/'
 def save_image(img, ref_img, name):
     img = sitk.GetImageFromArray(img[0, 0, ...].cpu().detach().numpy())
     img.SetOrigin(ref_img.GetOrigin())

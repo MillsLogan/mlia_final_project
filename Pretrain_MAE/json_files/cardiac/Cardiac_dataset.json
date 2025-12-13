@@ -509,99 +509,101 @@
         },
         {
             "image": "training/patient085_frame09.nii.gz"
-        },
-        {
-            "image": "training/patient086_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient086_frame08.nii.gz"
-        },
-        {
-            "image": "training/patient087_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient087_frame10.nii.gz"
-        },
-        {
-            "image": "training/patient088_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient088_frame12.nii.gz"
-        },
-        {
-            "image": "training/patient089_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient089_frame10.nii.gz"
-        },
-        {
-            "image": "training/patient090_frame04.nii.gz"
-        },
-        {
-            "image": "training/patient090_frame11.nii.gz"
-        },
-        {
-            "image": "training/patient091_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient091_frame09.nii.gz"
-        },
-        {
-            "image": "training/patient092_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient092_frame06.nii.gz"
-        },
-        {
-            "image": "training/patient093_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient093_frame14.nii.gz"
-        },
-        {
-            "image": "training/patient094_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient094_frame07.nii.gz"
-        },
-        {
-            "image": "training/patient095_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient095_frame12.nii.gz"
-        },
-        {
-            "image": "training/patient096_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient096_frame08.nii.gz"
-        },
-        {
-            "image": "training/patient097_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient097_frame11.nii.gz"
-        },
-        {
-            "image": "training/patient098_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient098_frame09.nii.gz"
-        },
-        {
-            "image": "training/patient099_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient099_frame09.nii.gz"
-        },
-        {
-            "image": "training/patient100_frame01.nii.gz"
-        },
-        {
-            "image": "training/patient100_frame13.nii.gz"
         }
     ],
     "validation": [
+        {
+            "image": "validation/patient086_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient086_frame08.nii.gz"
+        },
+        {
+            "image": "validation/patient087_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient087_frame10.nii.gz"
+        },
+        {
+            "image": "validation/patient088_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient088_frame12.nii.gz"
+        },
+        {
+            "image": "validation/patient089_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient089_frame10.nii.gz"
+        },
+        {
+            "image": "validation/patient090_frame04.nii.gz"
+        },
+        {
+            "image": "validation/patient090_frame11.nii.gz"
+        },
+        {
+            "image": "validation/patient091_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient091_frame09.nii.gz"
+        },
+        {
+            "image": "validation/patient092_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient092_frame06.nii.gz"
+        },
+        {
+            "image": "validation/patient093_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient093_frame14.nii.gz"
+        },
+        {
+            "image": "validation/patient094_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient094_frame07.nii.gz"
+        },
+        {
+            "image": "validation/patient095_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient095_frame12.nii.gz"
+        },
+        {
+            "image": "validation/patient096_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient096_frame08.nii.gz"
+        },
+        {
+            "image": "validation/patient097_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient097_frame11.nii.gz"
+        },
+        {
+            "image": "validation/patient098_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient098_frame09.nii.gz"
+        },
+        {
+            "image": "validation/patient099_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient099_frame09.nii.gz"
+        },
+        {
+            "image": "validation/patient100_frame01.nii.gz"
+        },
+        {
+            "image": "validation/patient100_frame13.nii.gz"
+        }
+    ],
+    "testing": [
         {
             "image": "testing/patient101_frame01.nii.gz"
         },

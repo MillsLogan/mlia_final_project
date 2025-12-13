@@ -208,3 +208,11 @@ __marimo__/
 ACDC*
 log*
 plot_result*
+pretrain_experiments*
+npdata/*
+experiments/*
+MAE_TransRNet_log/*
+registration_experiments/*
+checkpoints/*
+results/*
+final_models/*

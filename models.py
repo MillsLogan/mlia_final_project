@@ -356,7 +356,7 @@ class MAE_Transformer(nn.Module):
         self.config = config
         assert masking_ratio > 0 and masking_ratio < 1, 'masking ratio must be kept between 0 and 1'
         self.masking_ratio = masking_ratio
-        patch_size = _triple(config.patches["size"])
+        patch_size = (16,16,16)
         # n_patches = int((img_size[0] // patch_size[0]) * (img_size[1] // patch_size[1]) * (img_size[2] // patch_size[2]))
         n_patches = int((img_size[0] / 2 ** 2 // patch_size[0]) * (img_size[1] / 2 ** 2 // patch_size[1]) * (
                     img_size[2] / 2 ** 2 // patch_size[2]))
@@ -775,10 +775,6 @@ class VecInt(nn.Module):
         for _ in range(self.nsteps):
             vec = vec + self.transformer(vec, vec)
         return vec
-
-CONFIGS = {
-    'MAE_TransRNet': configs.get_3DReg_config(),
-}
 
 
 # vv = MAE_TransRNet(CONFIGS['MAE_TransRNet'],(64,256,256))

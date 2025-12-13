@@ -1,16 +1,16 @@
 from torch.utils.tensorboard import SummaryWriter
 import os, glob
+import new_models
 from tools import utils,losses
 import sys
 from torch.utils.data import DataLoader
 from data_pre import datasets, trans
 import numpy as np
-import torch, models
+import torch
 from torchvision import transforms
 from torch import optim
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from models import CONFIGS as CONFIGS_reg
 from natsort import natsorted
 
 class Logger(object):
@@ -44,22 +44,95 @@ class AverageMeter(object):
 def MSE_torch(x, y):
     return torch.mean((x - y) ** 2)
 
+class CNN(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv3d(in_channels, 16, kernel_size=3, padding=1, stride=1),
+            nn.GELU(),
+            nn.Conv3d(16, out_channels, kernel_size=3, padding=1, stride=1),
+        )
+
+    def forward(self, x):
+        x = self.cnn(x)
+        return x
+
+class RegistrationNet(torch.nn.Module):
+    def __init__(self, 
+                img_size=(64,128,128),
+                patch_size=16,
+                encoder_dim=768,
+                mlp_dim=3072,
+                masking_ratio = 0.,   # the paper recommended 75% masked patches
+                decoder_dim = 512,      # paper showed good results with just 512
+                dec_num_layers = 6,       # anywhere from 1 to 8
+                dec_num_heads=4,
+                enc_num_layers=12,
+                enc_num_heads=12,
+                in_channels=2,
+                out_channels=3):
+        super().__init__()
+        self.MAE = new_models.MAETransformer(
+            img_size=img_size,
+            patch_size=patch_size,
+            encoder_dim=encoder_dim,
+            mlp_dim=mlp_dim,
+            masking_ratio = masking_ratio,
+            decoder_dim = decoder_dim,
+            dec_num_layers = dec_num_layers,
+            dec_num_heads=dec_num_heads,
+            enc_num_layers=enc_num_layers,
+            enc_num_heads=enc_num_heads,
+        )
+        self.cnn_encoder = CNN(in_channels=in_channels, out_channels=1)
+        self.cnn_decoder = CNN(in_channels=1, out_channels=out_channels) # Map to 3 channels for the deformation field
+
+    def forward(self, x, masked_loss=False):
+        x = self.cnn_encoder(x) # Map 2 channels to 1 channel
+        output, _ = self.MAE(x, masked_loss)
+        output = self.cnn_decoder(output) # Map 1 channel to 3 channels for deformation field
+        return output
+
 def main():
+    logdir = './experiments/'
+    save_loss_dir = './experiments/losses/'
+    checkpoint_dir = './checkpoints/'
+    os.makedirs(save_loss_dir, exist_ok=True)
+    os.makedirs(logdir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     batch_size = 2
     train_dir = './npdata/training'
     val_dir = './npdata/validation'
-    save_dir = 'MAE_TransRNet_reg/'
-    lr = 0.0005
+    lr = 5e-4
+    reg_weight = 0.01 # Weight for flow loss
     epoch_start = 0
     max_epoch = 500
-    config_MAE = CONFIGS_reg['MAE_TransRNet']
-    reg_model = utils.register_model((64,128,128), 'nearest')
-    reg_model.cuda()
-    reg_model_bilin = utils.register_model((64,128,128), 'bilinear')
-    reg_model_bilin.cuda()
-    model = models.MAE_Transformer(config_MAE, img_size=(64,128,128))
-    use_pretrained = 1
-    pretrained_path = os.path.normpath('/home/xiaoxin/MAE_TransRNet/tmp/pycharm_project_858/Pretrain_MAE/pretrain_model/MAE_Base_Pretrain_ACDC.pt')
+    reg_model_val = utils.register_model((64,128,128), 'nearest')
+    reg_model_val.cuda()
+    reg_model_bilin_train = utils.register_model((64,128,128), 'bilinear')
+    reg_model_bilin_train.cuda()
+    model = RegistrationNet(
+        img_size=(64,128,128),
+        patch_size=16,
+        encoder_dim=768,
+        mlp_dim=3072,
+        masking_ratio = 0.,   # the paper recommended 75% masked patches
+        decoder_dim = 512,      # paper showed good results with just 512
+        dec_num_layers = 6,       # anywhere from 1 to 8
+        dec_num_heads=4,
+        enc_num_layers=12,
+        enc_num_heads=12,
+        in_channels=2,
+        out_channels=3
+    )
+
+    # Change the model to accept 2 channel input
+    # first_layer = model.patch_to_encoder
+    # old_weights = first_layer.weight.data
+    # new_weights = old_weights.repeat_interleave(2, dim=1)
+    # first_layer.weight.data = new_weights / 2.0
+    # model.patch_to_encoder = first_layer
+    
     updated_lr = lr
 
     model.cuda()
@@ -76,122 +149,139 @@ def main():
     train_loader = DataLoader(train_set, batch_size=batch_size,shuffle=True, num_workers=0, pin_memory=True)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, drop_last=True)
 
+    x, y = next(iter(train_loader))
+
     optimizer = optim.Adam(model.parameters(), lr=updated_lr, weight_decay=0, amsgrad=True)
     # optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0, amsgrad=True)
-    criterion = nn.MSELoss()
-    criterions = [criterion]
 
     # Load MAE backbone weights into Registration Network
-    if use_pretrained == 1:
-        print('Loading Weights from the Path {}'.format(pretrained_path))
-        MAE_dict = torch.load(pretrained_path)
-        MAE_weights = MAE_dict['state_dict']
+    # if use_pretrained == 1:
+    #     print('Loading Weights from the Path {}'.format(pretrained_path))
+    #     MAE_dict = torch.load(pretrained_path)
+    #     MAE_weights = MAE_dict['state_dict']
 
-        model_dict = model.MAE.state_dict()
-        MAE_weights = {k: v for k, v in MAE_weights.items() if k in model_dict}
-        model_dict.update(MAE_weights)
-        model.MAE.load_state_dict(model_dict)
-        del model_dict, MAE_weights, MAE_dict
-        print('Pretrained Weights Succesfully Loaded !')
+    #     model_dict = model.MAE.state_dict()
+    #     MAE_weights = {k: v for k, v in MAE_weights.items() if k in model_dict}
+    #     model_dict.update(MAE_weights)
+    #     model.MAE.load_state_dict(model_dict)
+    #     del model_dict, MAE_weights, MAE_dict
+    #     print('Pretrained Weights Succesfully Loaded !')
 
-    elif use_pretrained == 0:
-        print('No weights were loaded, all weights being used are randomly initialized!')
+    # elif use_pretrained == 0:
+    #     print('No weights were loaded, all weights being used are randomly initialized!')
 
     # prepare deformation loss
-    criterions += [losses.Grad3d(penalty='l2')]
     # cosine_schedule = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=20, eta_min=1e-9)
     best_mse = 0
-    writer = SummaryWriter(log_dir='MAE_TransRNet_log')
+    writer = SummaryWriter(log_dir=logdir)
 
-    Train_Loss = []
-    MSE_val_Dice = []
+    training_grad_loss_vals = []
+    training_mse_loss_vals = []
+    training_weighted_grad_loss_vals = []
+    
+    validation_grad_loss_vals = []
+    validation_mse_loss_vals = []
+    validation_weighted_grad_loss_vals = []
+    validation_dsc_vals = []
+
+    mse_loss = torch.nn.MSELoss()
+    grad_loss = losses.Grad3d(penalty='l2')
+    
 
     for epoch in range(epoch_start, max_epoch):
         print('Training Starts')
         # Start Training
-        loss_all = AverageMeter()
         idx = 0
-        for data in train_loader:
+        tot_sim_loss = 0
+        tot_grad_loss = 0
+        for x, y in train_loader:
             idx += 1
             model.train()
-            adjust_learning_rate(optimizer, epoch, max_epoch, lr)
-            data = [t.cuda() for t in data]
-            x = data[0]
-            y = data[1]
+            # Turn off learning rate adjustment
+            # adjust_learning_rate(optimizer, epoch, max_epoch, lr)
+            x = x.cuda()
+            y = y.cuda()
             x_in = torch.cat((x,y), dim=1)
-            output = model(x_in)
-            loss = 0
-            loss_vals = []
-            for n, loss_function in enumerate(criterions):
-                curr_loss = loss_function(output[n], y) * MAE_weights[n]
-                loss_vals.append(curr_loss)
-                loss += curr_loss
-            loss_all.update(loss.item(), y.numel())
-            # compute gradient and do SGD step
+            deformation_field = model(x_in)
+            warped_output = reg_model_bilin_train([x, deformation_field])
+            sim_loss = mse_loss(warped_output, y)
+            tot_sim_loss += sim_loss.item()
+            flow_loss = grad_loss(deformation_field, None)
+            tot_grad_loss += flow_loss.item()
+            training_grad_loss_vals.append(flow_loss.item())
+            training_mse_loss_vals.append(sim_loss.item())
+            training_weighted_grad_loss_vals.append(flow_loss.item() * reg_weight)
+            if epoch > max_epoch // 2:
+                loss = sim_loss + flow_loss * reg_weight
+            else:
+                loss = sim_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            # cosine_schedule.step()
-
-            del x_in
-            del output
-            # flip fixed and moving images
-            loss = 0
-            x_in = torch.cat((y, x), dim=1)
-            output = model(x_in)
-            for n, loss_function in enumerate(criterions):
-                curr_loss = loss_function(output[n], x) * MAE_weights[n]
-                loss_vals[n] += curr_loss
-                loss += curr_loss
-            loss_all.update(loss.item(), y.numel())
-            # compute gradient and do SGD step
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            # cosine_schedule.step()
-
-            print('Iter {} of {} loss {:.4f}, Img Sim: {:.6f}, Reg: {:.6f}'.format(idx, len(train_loader), loss.item(), loss_vals[0].item()/2, loss_vals[1].item()/2))
-
-        writer.add_scalar('Loss/train', loss_all.avg, epoch)
-        Train_Loss.append(loss_all.avg)
-        train_loss = np.array(Train_Loss)
-        np.save('/home/xiaoxin/MAE_TransRNet/result_train_loss/bs_{}_Train_Loss_epoch_{}'.format(batch_size, epoch + 1),train_loss)
-        print('Epoch {} loss {:.4f}'.format(epoch, loss_all.avg))
+            print(f"Epoch [{epoch+1}/{max_epoch}], Step [{idx}/{len(train_loader)}] - Loss: {sim_loss + flow_loss * reg_weight:.4f} - Sim Loss: {sim_loss:.4f} - Flow Loss: {flow_loss * reg_weight:.4f} - Flow Loss (unweighted): {flow_loss:.4f}")
+        writer.add_scalar('Loss/train', tot_sim_loss + tot_grad_loss * reg_weight, epoch)
+        writer.add_scalar('Sim_Loss/train', tot_sim_loss, epoch)
+        writer.add_scalar('Flow_Loss/train', tot_grad_loss * reg_weight, epoch)
+        np.savez(f'{save_loss_dir}/training_loss_epoch_{epoch+1}.npz',
+                 training_mse_loss=np.array(training_mse_loss_vals),
+                 training_grad_loss=np.array(training_grad_loss_vals),
+                 training_weighted_grad_loss=np.array(training_weighted_grad_loss_vals))
+        
+        print(f"Epoch [{epoch+1}/{max_epoch}] - Training Losses Saved.")
 
 
         # Start Validation
-        eval_dsc = AverageMeter()
+        tot_sim_loss = 0
+        tot_grad_loss = 0
+        dsc_per_class = 0
         with torch.no_grad():
-            for idx, data in enumerate(val_loader):
+            for idx, (x, y, x_seg, y_seg) in enumerate(val_loader):
                 model.eval()
-                data = [t.cuda() for t in data]
-                x = data[0]
-                # print("x.shape:",x.shape) # [2,1,64,256,256]
-                y = data[1]
-                # print("y.shape:",y.shape)
-                x_seg = data[2]
-                y_seg = data[3]
-                # print("x_seg.shape:",x_seg.shape)
-                # print("y_seg.shape:",y_seg.shape)
-                # x = x.squeeze(0).permute(1, 0, 2, 3)
-                # y = y.squeeze(0).permute(1, 0, 2, 3)
+                x = x.cuda()
+                y = y.cuda()
+                x_seg = x_seg.cuda()
+                y_seg = y_seg.cuda()
+
                 x_in = torch.cat((x, y), dim=1)
-                output = model(x_in)
-                def_out = reg_model([x_seg[:, 0, ...].cuda().float(), output[1].cuda()])
-                dsc = utils.dice_val(def_out.long(), y_seg[:, 0, ...].long())
-                eval_dsc.update(dsc.item(), x.size(0))
-                print("{}-eval_dsc.avg:{}".format(idx,eval_dsc.avg))
-        best_mse = max(eval_dsc.avg, best_mse)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_mse': best_mse,
-            'optimizer': optimizer.state_dict(),
-        }, save_dir='./experiments/', filename='Dice-{:.3f}.pth.tar'.format(eval_dsc.avg))
-        writer.add_scalar('MSE/validate', eval_dsc.avg, epoch)
-        MSE_val_Dice.append(eval_dsc.avg)
-        mse_val_dice = np.array(MSE_val_Dice)
-        np.save('/home/xiaoxin/MAE_TransRNet/result_MSE_Dice/bs_{}_MSE_Dice_epoch_{}'.format(batch_size, epoch + 1), mse_val_dice)
+                deformation_field = model(x_in)
+                
+                moving_seg = x_seg[:, 0, ...].float()
+                fixed_seg = y_seg[:, 0, ...].long()
+
+                def_out = reg_model_val([moving_seg, deformation_field])
+
+                dsc_per_class = utils.dice_val_per_class(def_out.long(), fixed_seg)
+                validation_dsc_vals.append(dsc_per_class.cpu().numpy())
+                warped_output = reg_model_bilin_train([x, deformation_field])
+                sim_loss = mse_loss(warped_output, y)
+                tot_sim_loss += sim_loss.item()
+                flow_loss = grad_loss(deformation_field, None)
+                tot_grad_loss += flow_loss.item()
+                validation_grad_loss_vals.append(flow_loss.item())
+                validation_mse_loss_vals.append(sim_loss.item())
+                validation_weighted_grad_loss_vals.append(flow_loss.item() * reg_weight)
+            writer.add_scalar('Loss/validate', tot_sim_loss + tot_grad_loss * reg_weight, epoch)
+            writer.add_scalar('Sim_Loss/validate', tot_sim_loss, epoch)
+            writer.add_scalar('Flow_Loss/validate', tot_grad_loss, epoch)
+            print(f"Epoch [{epoch+1}/{max_epoch}] - Validation Loss: {tot_sim_loss + tot_grad_loss * reg_weight:.4f} - Sim Loss: {tot_sim_loss:.4f} - Flow Loss: {tot_grad_loss:.4f}")
+            np.savez(f'{save_loss_dir}/validation_loss_epoch_{epoch+1}.npz',
+                     validation_mse_loss=np.array(validation_mse_loss_vals),
+                        validation_grad_loss=np.array(validation_grad_loss_vals),
+                        validation_weighted_grad_loss=np.array(validation_weighted_grad_loss_vals),
+                        validation_dsc=np.array(validation_dsc_vals))
+            
+                
+        if (dsc_per_class.mean().item() >= best_mse):
+            best_mse = dsc_per_class.mean().item()
+            print('New Best MSE: {:.4f} at epoch {}'.format(best_mse, epoch+1))
+
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_mse': best_mse,
+                'optimizer': optimizer.state_dict(),
+            }, save_dir=checkpoint_dir, filename='Dice-{:.3f}.pth.tar'.format(dsc_per_class.mean().item()))
+        
         plt.switch_backend('agg')
         pred_fig = comput_fig(def_out.unsqueeze(0))
 
@@ -203,7 +293,6 @@ def main():
         plt.close(tar_fig)
         writer.add_figure('prediction', pred_fig, epoch)
         plt.close(pred_fig)
-        loss_all.reset()
     writer.close()
 
 # img = img.detach().cpu().numpy()[0, 0, :, 32, :, :]

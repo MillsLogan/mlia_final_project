@@ -18,8 +18,7 @@ class CardiacDataset(Dataset):
         y = data['y'].astype(np.float32)
 
         x, y = x[None, ...], y[None, ...]
-        # print(x.shape)
-        # print(y.shape)
+
         x,y = self.transforms([x, y])
 
         x = np.ascontiguousarray(x) # [B,C,H,W,D]
@@ -54,8 +53,8 @@ class CardiacInferDataset(Dataset):
         data = np.load(os.path.join(self.path, file))
         x = data['x'].astype(np.float32)
         y = data['y'].astype(np.float32)
-        x_Mask = data['x_Mask'].astype(np.float32)
-        y_Mask = data['y_Mask'].astype(np.float32)
+        x_Mask = data['xSeg'].astype(np.float32)
+        y_Mask = data['ySeg'].astype(np.float32)
 
         x, y = x[None, ...], y[None, ...]
         x_Mask, y_Mask= x_Mask[None, ...], y_Mask[None, ...]
