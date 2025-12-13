@@ -1,6 +1,12 @@
 # Running
 To run the model please use the provided `alt-requirements.txt` with `Python3.10`.
 
+The npdata directory contains the processed ACDC dataset created using `preprocess.py`. The models are provided on Rivanna under `standard/mlia/MAE_TransRNet/mlia_final_project/final_models`.
+
+To test a model use the provided `test.py` commneting/uncommenting the provided utilities to reproduce the results presented in the paper.
+
+Exact figures can be created using `figures.ipynb` with the output created from the `test.py` file.
+
 
 If the npdata directory is not provided, download the ACDC dataset and run the `move_val_set.py` script to move the validation images to a new folder. Then run the `preprocess.py` file to create the required numpy files.
 
@@ -11,7 +17,6 @@ To pretrain a model use `custom_pretrain.py` and uncomment the corresponding mod
 To train a registration model, use `train.py` and specify if you'd like to load the pretraining weights or not.
 
 
-To test a model use the provided `test.py` commneting/uncommenting the provided utilities to reproduce the results presented in the paper.
 
 
 
